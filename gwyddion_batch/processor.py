@@ -3,9 +3,11 @@
 from __future__ import absolute_import
 
 import logging
+import os
 from contextlib import contextmanager
 
 from .compat import to_native_path
+from .video import stitch_images_to_video
 
 
 SUPPORTED_EXTENSIONS = [
@@ -19,11 +21,11 @@ def get_supported_extensions():
     return list(SUPPORTED_EXTENSIONS)
 
 
-def generate_output_path(input_path, pixel_count, width_nm):
+def generate_output_path(input_path, pixel_count, width_nm, output_directory=None):
     """Generate the output PNG file path for ``input_path``."""
     import os
 
-    directory = os.path.dirname(input_path)
+    directory = output_directory or os.path.dirname(input_path)
     base_name = os.path.splitext(os.path.basename(input_path))[0]
     width_nm_int = int(round(width_nm))
     return os.path.join(directory, '%dpx_%dnm_%s.png' % (pixel_count, width_nm_int, base_name))
@@ -62,26 +64,60 @@ class GwyddionBatchProcessor(object):
             )
             return {'processed': 0, 'total': 0}
 
+        output_directory = config.ensure_output_directory()
+        self.logger.info('Processed images will be written to %s', output_directory)
+
         self.logger.info('Found %d files to process', len(files))
         self.logger.info('Settings: channel=%d, pixels=%d',
                          config.channel_number, config.pixel_count)
 
         successes = 0
+        output_paths = []
         for index, path in enumerate(files):
             interactive = (index == 0)
-            if self.process_file(path, config.channel_number, config.pixel_count, interactive):
+            result = self.process_file(
+                path,
+                config.channel_number,
+                config.pixel_count,
+                interactive,
+                output_directory,
+            )
+            if result:
                 successes += 1
+                output_paths.append(result)
 
         self.logger.info('Processing complete: %d/%d files succeeded', successes, len(files))
-        return {'processed': successes, 'total': len(files)}
 
-    def process_file(self, file_path, channel_number, pixel_count, interactive):
-        """Process a single file, returning ``True`` on success."""
+        video_path = None
+        if config.video.enabled and output_paths:
+            try:
+                video_path = self._render_video(output_paths, config)
+                self.logger.info('Video written to %s', video_path)
+            except Exception as exc:
+                self.logger.error('Failed to create video: %s', exc)
+                self.logger.debug('Video rendering error details', exc_info=True)
+
+        return {
+            'processed': successes,
+            'total': len(files),
+            'output_paths': output_paths,
+            'output_directory': output_directory,
+            'video_path': video_path,
+        }
+
+    def process_file(self, file_path, channel_number, pixel_count, interactive,
+                     output_directory=None):
+        """Process a single file and return the output image path."""
         self.logger.info('Processing %s', file_path)
         try:
             with self._open_container(file_path) as container:
                 return self._process_container(
-                    container, file_path, channel_number, pixel_count, interactive
+                    container,
+                    file_path,
+                    channel_number,
+                    pixel_count,
+                    interactive,
+                    output_directory,
                 )
         except Exception as exc:
             self.logger.error('Error processing %s: %s', file_path, exc)
@@ -90,7 +126,8 @@ class GwyddionBatchProcessor(object):
 
     # --- Internal helpers -------------------------------------------------
 
-    def _process_container(self, container, file_path, channel_number, pixel_count, interactive):
+    def _process_container(self, container, file_path, channel_number, pixel_count,
+                           interactive, output_directory):
         gwy = self.gwy
 
         data_ids = gwy.gwy_app_data_browser_get_data_ids(container)
@@ -126,9 +163,14 @@ class GwyddionBatchProcessor(object):
         gwy.gwy_app_data_browser_select_data_field(container, scaled_channel)
         self._apply_final_alignment(container, settings)
 
-        output_path = generate_output_path(file_path, pixel_count, xreal * 1e9)
+        output_path = generate_output_path(
+            file_path,
+            pixel_count,
+            xreal * 1e9,
+            output_directory=output_directory,
+        )
         self._save_container(container, output_path, interactive)
-        return True
+        return output_path
 
     def _apply_initial_processing(self, container, settings):
         gwy = self.gwy
@@ -159,6 +201,9 @@ class GwyddionBatchProcessor(object):
 
     def _save_container(self, container, output_path, interactive):
         gwy = self.gwy
+        directory = os.path.dirname(output_path)
+        if directory and not os.path.isdir(directory):
+            os.makedirs(directory)
         self.logger.info('Saving to %s', output_path)
         run_mode = gwy.RUN_INTERACTIVE if interactive else gwy.RUN_NONINTERACTIVE
         gwy.gwy_file_save(container, to_native_path(output_path), run_mode)
@@ -169,3 +214,25 @@ class GwyddionBatchProcessor(object):
         nm_per_pixel_x = (xreal * 1e9) / float(xres)
         nm_per_pixel_y = (yreal * 1e9) / float(yres)
         self.logger.info('Original nm/pixel: %.3f x %.3f', nm_per_pixel_x, nm_per_pixel_y)
+
+    def _render_video(self, image_paths, config):
+        video_path = config.get_video_output_path()
+        if not video_path:
+            return None
+        settings = config.video
+        if settings.frame_rate and settings.frame_rate > 0:
+            frame_rate = settings.frame_rate
+        else:
+            frame_rate = None
+        frame_duration = settings.frame_duration if frame_rate is None else None
+        stitch_images_to_video(
+            image_paths,
+            video_path,
+            ffmpeg_path=settings.ffmpeg_path,
+            frame_rate=frame_rate,
+            frame_duration=frame_duration,
+            pixel_format=settings.pixel_format,
+            extra_args=settings.extra_args,
+            logger=self.logger,
+        )
+        return video_path

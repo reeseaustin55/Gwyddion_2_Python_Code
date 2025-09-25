@@ -6,7 +6,7 @@ import argparse
 import logging
 import sys
 
-from .config import BatchConfig
+from .config import BatchConfig, VideoSettings
 from .gwyddion_loader import import_gwyddion
 from .processor import GwyddionBatchProcessor
 
@@ -24,6 +24,23 @@ def build_arg_parser():
                         help='Additional directories to search for the Gwyddion Python bindings.')
     parser.add_argument('--log-level', default='INFO',
                         help='Logging level (DEBUG, INFO, WARNING, ...). Default: INFO.')
+    parser.add_argument('--output-dir', dest='output_directory', default=None,
+                        help='Directory where processed images should be stored. '
+                             'Defaults to <folder>/processed.')
+    parser.add_argument('--video', dest='video', action='store_true',
+                        help='Enable stitching processed images into a video.')
+    parser.add_argument('--video-output', dest='video_output', default=None,
+                        help='Optional path for the rendered video file.')
+    parser.add_argument('--ffmpeg', dest='ffmpeg_path', default='ffmpeg',
+                        help='Path to the ffmpeg executable (default: ffmpeg).')
+    parser.add_argument('--frame-duration', dest='frame_duration', type=float, default=None,
+                        help='Frame duration in seconds for the video (default: 0.1).')
+    parser.add_argument('--frame-rate', dest='frame_rate', type=float, default=None,
+                        help='Frame rate for the video; overrides frame duration when set.')
+    parser.add_argument('--pixel-format', dest='pixel_format', default='yuv420p',
+                        help='Pixel format for ffmpeg output (default: yuv420p).')
+    parser.add_argument('--ffmpeg-extra', dest='ffmpeg_extra', action='append', default=[],
+                        help='Additional arguments to pass to ffmpeg. May be used multiple times.')
     return parser
 
 
@@ -41,12 +58,28 @@ def main(argv=None):
     logger = logging.getLogger(__name__)
 
     try:
+        frame_duration = args.frame_duration
+        if frame_duration is None and args.frame_rate is None and args.video:
+            frame_duration = 0.1
+
+        video_settings = VideoSettings(
+            enabled=args.video,
+            output_path=args.video_output,
+            ffmpeg_path=args.ffmpeg_path,
+            frame_rate=args.frame_rate,
+            frame_duration=frame_duration,
+            pixel_format=args.pixel_format,
+            extra_args=args.ffmpeg_extra,
+        )
+
         config = BatchConfig(
             folder_path=args.folder,
             channel_number=args.channel,
             pixel_count=args.pixels,
             file_filter=args.file_filter,
             gwyddion_paths=args.gwyddion_paths,
+            output_directory=args.output_directory,
+            video_settings=video_settings,
         )
         gwy = import_gwyddion(config.gwyddion_paths, logger=logger)
     except Exception as exc:

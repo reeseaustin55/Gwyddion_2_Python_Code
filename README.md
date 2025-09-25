@@ -15,7 +15,8 @@ gwyddion_batch/
 ├── cli.py                 # argparse-based command line interface
 ├── config.py              # Configuration helpers and validation
 ├── gwyddion_loader.py     # Utilities for importing the gwy module
-└── processor.py           # Core processing logic
+├── processor.py           # Core processing logic
+└── video.py               # ffmpeg-based video stitching helpers
 ```
 
 A helper script, `run_batch.py`, demonstrates how the API can be consumed from
@@ -49,7 +50,10 @@ config = BatchConfig(
 
 gwy = import_gwyddion(config.gwyddion_paths)
 processor = GwyddionBatchProcessor(gwy)
-processor.process_folder(config)
+result = processor.process_folder(config)
+print('Processed images saved to', result['output_directory'])
+if result.get('video_path'):
+    print('Video created at', result['video_path'])
 ```
 
 ### Command line interface
@@ -58,7 +62,16 @@ processor.process_folder(config)
 python -m gwyddion_batch.cli D:\Data\MyExperiment --pixels 1024 --channel 0
 ```
 
-Use `--help` for the full list of options.
+Use `--help` for the full list of options.  Additional flags let you choose the
+output directory and enable automatic video rendering (requires `ffmpeg`).
+
+### Video stitching
+
+Processed images are written to a dedicated folder (``processed`` by default).
+When video rendering is enabled the tool will invoke `ffmpeg` using a concat
+file similar to the batch scripts provided previously.  You can customise the
+frame rate, per-frame duration, pixel format, and pass through additional
+arguments to `ffmpeg`.
 
 ### Example script
 
@@ -69,6 +82,9 @@ constants at the top of the file and execute it with Python:
 ```bash
 python run_batch.py
 ```
+
+The script exposes explicit constants for the output subdirectory and video
+rendering options, mirroring the available command line flags.
 
 ## Development
 
