@@ -1,0 +1,80 @@
+# Gwyddion Batch Processing Utilities
+
+This repository provides reusable building blocks for processing AFM/SPM images
+with the [Gwyddion](http://gwyddion.net/) Python bindings.  The code started as a
+single monolithic script and has been refactored into a small, testable package
+with both API and command-line entry points.
+
+## Package layout
+
+```
+gwyddion_batch/
+├── __init__.py            # Convenience exports
+├── cli.py                 # argparse-based command line interface
+├── config.py              # Configuration helpers and validation
+├── gwyddion_loader.py     # Utilities for importing the gwy module
+└── processor.py           # Core processing logic
+```
+
+A helper script, `run_batch.py`, demonstrates how the API can be consumed from
+Python code while preserving the editable "user settings" block from the
+original script.
+
+## Installation
+
+The code is intentionally lightweight and has no external dependencies beyond
+Python and the Gwyddion bindings.  Copy the package into a location on your
+`PYTHONPATH` or install it into a virtual environment using `pip`:
+
+```bash
+pip install .
+```
+
+(You can also run it directly from the repository without installation.)
+
+## Usage
+
+### Python API
+
+```python
+from gwyddion_batch import BatchConfig, GwyddionBatchProcessor, import_gwyddion
+
+config = BatchConfig(
+    folder_path=r"D:\\Data\\MyExperiment",
+    channel_number=0,
+    pixel_count=1024,
+)
+
+gwy = import_gwyddion(config.gwyddion_paths)
+processor = GwyddionBatchProcessor(gwy)
+processor.process_folder(config)
+```
+
+### Command line interface
+
+```bash
+python -m gwyddion_batch.cli D:\Data\MyExperiment --pixels 1024 --channel 0
+```
+
+Use `--help` for the full list of options.
+
+### Example script
+
+The `run_batch.py` script keeps the editable constants approach of the original
+script while delegating the heavy lifting to the reusable package.  Adjust the
+constants at the top of the file and execute it with Python:
+
+```bash
+python run_batch.py
+```
+
+## Development
+
+Run a basic syntax check with:
+
+```bash
+python -m compileall gwyddion_batch run_batch.py
+```
+
+This ensures all modules are syntactically correct without requiring the
+Gwyddion libraries at compile time.
