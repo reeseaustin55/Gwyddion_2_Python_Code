@@ -5,6 +5,8 @@ from __future__ import absolute_import
 import logging
 from contextlib import contextmanager
 
+from .compat import to_native_path
+
 
 SUPPORTED_EXTENSIONS = [
     '.spm', '.afm', '.gwy', '.nanoscope', '.jpk', '.ibw', '.pfc',
@@ -37,7 +39,8 @@ class GwyddionBatchProcessor(object):
     @contextmanager
     def _open_container(self, file_path):
         """Context manager yielding a Gwyddion data container."""
-        container = self.gwy.gwy_file_load(file_path, self.gwy.RUN_NONINTERACTIVE)
+        native_path = to_native_path(file_path)
+        container = self.gwy.gwy_file_load(native_path, self.gwy.RUN_NONINTERACTIVE)
         if not container:
             raise RuntimeError('Failed to load %s' % file_path)
         self.gwy.gwy_app_data_browser_add(container)
@@ -158,7 +161,7 @@ class GwyddionBatchProcessor(object):
         gwy = self.gwy
         self.logger.info('Saving to %s', output_path)
         run_mode = gwy.RUN_INTERACTIVE if interactive else gwy.RUN_NONINTERACTIVE
-        gwy.gwy_file_save(container, output_path, run_mode)
+        gwy.gwy_file_save(container, to_native_path(output_path), run_mode)
 
     def _log_resolution_details(self, xres, yres, xreal, yreal):
         self.logger.info('Original resolution: %dx%d pixels', xres, yres)

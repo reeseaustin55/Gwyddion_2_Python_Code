@@ -6,6 +6,8 @@ import logging
 import os
 import sys
 
+from .compat import to_native_path
+
 
 DEFAULT_SEARCH_PATHS = [
     r"C:\\Program Files\\Gwyddion\\bin",
@@ -32,9 +34,12 @@ def import_gwyddion(additional_paths=None, logger=None):
 
     paths = list(additional_paths or []) + DEFAULT_SEARCH_PATHS
     for path in paths:
-        if path and os.path.isdir(path) and path not in sys.path:
+        if not path or not os.path.isdir(path):
+            continue
+        native_path = to_native_path(path)
+        if native_path not in sys.path:
             logger.debug('Adding %s to Python path for Gwyddion import', path)
-            sys.path.append(path)
+            sys.path.insert(0, native_path)
 
     try:
         # Import locally to avoid leaking the name if import fails.

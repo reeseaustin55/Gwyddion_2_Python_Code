@@ -1,9 +1,11 @@
 # Gwyddion Batch Processing Utilities
 
 This repository provides reusable building blocks for processing AFM/SPM images
-with the [Gwyddion](http://gwyddion.net/) Python bindings.  The code started as a
-single monolithic script and has been refactored into a small, testable package
-with both API and command-line entry points.
+with the [Gwyddion](http://gwyddion.net/) Python bindings.  The utilities remain
+fully compatible with Python 2.7 (the environment recommended by Gwyddion) while
+also running on modern Python interpreters.  The original monolithic script has
+been refactored into a small, testable package with both API and command-line
+entry points.
 
 ## Package layout
 
