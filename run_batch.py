@@ -18,18 +18,16 @@ from gwyddion_batch import (
 FOLDER_PATH = r'D:\AFM Images\hopg_CORROSION_100mMHClO4_N2flow_Irtip_09162025\2nd attempt\Set1'
 CHANNEL_NUMBERS = [0]
 PIXEL_COUNT = 1024
-FILE_FILTER = None  # e.g. '.spm'
+FILE_FILTER = '.ibw'
 ADDITIONAL_GWY_PATHS = [r"C:\\Program Files (x86)\\Gwyddion\\bin"]
-OUTPUT_SUBDIR = 'processed'
+OUTPUT_SUBDIR = None  # Use the timestamped default when ``None``
 
 # Video rendering settings -------------------------------------------------
 VIDEO_ENABLED = False
-VIDEO_OUTPUT = None  # Optional explicit filename
 FFMPEG_PATH = r"C:\\Program Files\\ffmpeg-2025-02-24-git-6232f416b1-full_build\\bin\\ffmpeg.exe"  # Or just 'ffmpeg' if on PATH
-FRAME_DURATION = 0.1  # seconds
-FRAME_RATE = None  # Optional alternative to FRAME_DURATION
-PIXEL_FORMAT = 'yuv420p'
-FFMPEG_EXTRA_ARGS = []  # e.g. ['-vf', 'scale=ceil(iw/2)*2:ceil(ih/2)*2']
+VIDEO_DURATION = 10.0  # seconds
+# Pixel format is fixed to yuv420p by default in the helper
+# Additional ffmpeg arguments can be provided via the API if needed
 # Stabilization settings ----------------------------------------------------
 STABILIZE_VIDEO = False
 STABILIZE_SHAKINESS = 5
@@ -58,12 +56,8 @@ def main():
 
     video_settings = VideoSettings(
         enabled=VIDEO_ENABLED,
-        output_path=VIDEO_OUTPUT,
         ffmpeg_path=FFMPEG_PATH,
-        frame_rate=FRAME_RATE,
-        frame_duration=FRAME_DURATION,
-        pixel_format=PIXEL_FORMAT,
-        extra_args=FFMPEG_EXTRA_ARGS,
+        duration_seconds=VIDEO_DURATION,
         stabilization=stabilization_settings,
     )
 
@@ -73,7 +67,8 @@ def main():
         pixel_count=PIXEL_COUNT,
         file_filter=FILE_FILTER,
         gwyddion_paths=ADDITIONAL_GWY_PATHS,
-        output_directory=os.path.join(FOLDER_PATH, OUTPUT_SUBDIR),
+        output_directory=(os.path.join(FOLDER_PATH, OUTPUT_SUBDIR)
+                          if OUTPUT_SUBDIR else None),
         video_settings=video_settings,
     )
 

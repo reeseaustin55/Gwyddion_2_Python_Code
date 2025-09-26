@@ -24,17 +24,18 @@ from gwyddion_batch import (
     StabilizationSettings,
     VideoSettings,
     stitch_images_to_video,
+    format_time_multiplier,
 )
 
 # USER SETTINGS - MODIFY AS NEEDED -------------------------------------------
-DEFAULT_IMAGE_DIRECTORY = 'D\\AFM Images'
+DEFAULT_IMAGE_DIRECTORY = r'D:\AFM Images'
 IMAGE_PATTERN = '*.png'
-OUTPUT_VIDEO = None  # Defaults to <image_directory>/output_video.mp4 when None
+OUTPUT_VIDEO = None  # Defaults to <image_directory>/<name>_<multiplier>.mp4 when None
 FFMPEG_PATH = r"C:\\Program Files\\ffmpeg-2025-02-24-git-6232f416b1-full_build\\bin\\ffmpeg.exe"  # Or just 'ffmpeg'
-FRAME_DURATION = 0.1  # seconds per frame (ignored when FRAME_RATE is set)
-FRAME_RATE = None  # Optional fixed frame rate
+VIDEO_DURATION = 10.0  # seconds
 PIXEL_FORMAT = 'yuv420p'
 FFMPEG_EXTRA_ARGS = []  # Additional ffmpeg arguments, e.g. ['-vf', 'scale=ceil(iw/2)*2:ceil(ih/2)*2']
+SOURCE_PATTERN = '*.ibw'
 
 # Stabilization controls -----------------------------------------------------
 STABILIZE_VIDEO = False
@@ -54,6 +55,115 @@ def collect_images(directory, pattern):
     paths = glob.glob(search_pattern)
     paths.sort()
     return paths
+
+
+def _extract_source_base(image_path):
+    base = os.path.splitext(os.path.basename(image_path))[0]
+    parts = base.split('_', 3)
+    if len(parts) >= 4:
+        return parts[3].lower()
+    return base.lower()
+
+
+def collect_frame_times(image_paths, source_directory, pattern, logger):
+    lookup = {}
+    search_pattern = os.path.join(source_directory, pattern)
+    for source_path in glob.glob(search_pattern):
+        base_name = os.path.splitext(os.path.basename(source_path))[0].lower()
+        try:
+            lookup[base_name] = os.path.getmtime(source_path)
+        except OSError:
+            lookup[base_name] = None
+
+    frame_times = []
+    missing = 0
+    for image_path in image_paths:
+        base_name = _extract_source_base(image_path)
+        timestamp = lookup.get(base_name)
+        if timestamp is None:
+            missing += 1
+        frame_times.append(timestamp)
+
+    if missing and logger:
+        logger.warning(
+            'Missing timestamp information for %d frame(s); durations will be approximated.',
+            missing,
+        )
+    return frame_times
+
+
+def compute_frame_schedule(capture_times, frame_count, video_duration):
+    if frame_count <= 0:
+        return [], 1.0, 0.0
+
+    if video_duration is None or video_duration <= 0:
+        video_duration = frame_count * 0.1
+    if video_duration <= 0:
+        video_duration = 1.0
+
+    aligned = list(capture_times[:frame_count])
+    while len(aligned) < frame_count:
+        aligned.append(None)
+
+    first = None
+    last = None
+    for value in aligned:
+        if value is None:
+            continue
+        if first is None:
+            first = value
+        last = value
+    if first is None or last is None or last < first:
+        actual_span = 0.0
+    else:
+        actual_span = float(last - first)
+
+    if actual_span > 0:
+        multiplier = actual_span / float(video_duration)
+    else:
+        multiplier = 1.0
+
+    fallback = video_duration / float(frame_count)
+    if fallback <= 0:
+        fallback = 0.1
+
+    intervals = []
+    for index in range(frame_count - 1):
+        current = aligned[index]
+        nxt = aligned[index + 1]
+        if current is None or nxt is None or nxt < current:
+            intervals.append(None)
+        else:
+            intervals.append(float(nxt - current))
+    if intervals:
+        intervals.append(intervals[-1])
+    else:
+        intervals.append(actual_span if actual_span > 0 else None)
+
+    durations = []
+    for interval in intervals:
+        if multiplier > 0 and interval and interval > 0:
+            value = interval / multiplier
+            if value <= 0:
+                value = fallback
+        else:
+            value = fallback
+        durations.append(value)
+
+    if len(durations) > frame_count:
+        durations = durations[:frame_count]
+    elif len(durations) < frame_count:
+        durations.extend([fallback] * (frame_count - len(durations)))
+
+    return durations, (multiplier if multiplier > 0 else 1.0), actual_span
+
+
+def append_multiplier_to_filename(path, multiplier_label):
+    base_path = os.path.abspath(path)
+    base, ext = os.path.splitext(base_path)
+    if not ext:
+        ext = '.mp4'
+    return base + '_' + multiplier_label + ext
 
 
 def prompt_for_directory(initialdir, logger):
@@ -96,15 +206,15 @@ def build_parser():
                         help='Optional explicit path for the rendered video file.')
     parser.add_argument('--ffmpeg', dest='ffmpeg_path', default=FFMPEG_PATH,
                         help='Path to the ffmpeg executable (default: %(default)s).')
-    parser.add_argument('--frame-duration', dest='frame_duration', type=float,
-                        default=FRAME_DURATION,
-                        help='Frame duration in seconds (default: %(default)s).')
-    parser.add_argument('--frame-rate', dest='frame_rate', type=float, default=FRAME_RATE,
-                        help='Frame rate; overrides frame duration when provided.')
+    parser.add_argument('--video-duration', dest='video_duration', type=float,
+                        default=VIDEO_DURATION,
+                        help='Length of the rendered video in seconds (default: %(default)s).')
     parser.add_argument('--pixel-format', dest='pixel_format', default=PIXEL_FORMAT,
                         help='Pixel format for ffmpeg output (default: %(default)s).')
     parser.add_argument('--extra-arg', dest='extra_args', action='append', default=None,
                         help='Additional arguments to pass through to ffmpeg.')
+    parser.add_argument('--source', dest='source_directory', default=None,
+                        help='Directory containing the original IBW files (default: parent of image directory).')
     parser.add_argument('--stabilize', dest='stabilize', action='store_true',
                         default=STABILIZE_VIDEO,
                         help='Enable drift correction and optional cropping.')
@@ -179,16 +289,38 @@ def main(argv=None):
 
     logger.info('Found %d images to stitch', len(images))
 
-    output_path = args.output_video or OUTPUT_VIDEO
-    if not output_path:
-        output_path = os.path.join(image_directory, 'output_video.mp4')
+    video_duration = args.video_duration if args.video_duration is not None else VIDEO_DURATION
+    if video_duration is None or video_duration <= 0:
+        video_duration = VIDEO_DURATION
+    if video_duration <= 0:
+        video_duration = max(len(images) * 0.1, 1.0)
 
-    frame_rate = args.frame_rate if args.frame_rate is not None else FRAME_RATE
-    frame_duration = args.frame_duration if args.frame_duration is not None else FRAME_DURATION
-    if frame_rate:
-        frame_duration = None
-    elif frame_duration is None:
-        frame_duration = 0.1
+    source_directory = args.source_directory or os.path.dirname(image_directory) or image_directory
+    source_directory = os.path.abspath(source_directory)
+    if not os.path.isdir(source_directory):
+        logger.warning('Source directory %s not found; using uniform frame durations.', source_directory)
+        capture_times = [None] * len(images)
+    else:
+        capture_times = collect_frame_times(images, source_directory, SOURCE_PATTERN, logger)
+
+    frame_durations, multiplier, actual_span = compute_frame_schedule(
+        capture_times,
+        len(images),
+        video_duration,
+    )
+
+    multiplier_label = format_time_multiplier(multiplier)
+
+    if args.output_video:
+        output_path = append_multiplier_to_filename(args.output_video, multiplier_label)
+    else:
+        base_name = os.path.basename(os.path.normpath(image_directory)) or 'output_video'
+        default_name = '%s_%s.mp4' % (base_name, multiplier_label)
+        output_path = os.path.join(image_directory, default_name)
+
+    ffmpeg_path = args.ffmpeg_path or FFMPEG_PATH
+    if not os.path.exists(ffmpeg_path):
+        ffmpeg_path = args.ffmpeg_path or 'ffmpeg'
 
     extra_args = list(FFMPEG_EXTRA_ARGS)
     if args.extra_args:
@@ -208,21 +340,22 @@ def main(argv=None):
     video_settings = VideoSettings(
         enabled=True,
         output_path=output_path,
-        ffmpeg_path=args.ffmpeg_path or FFMPEG_PATH,
-        frame_rate=frame_rate,
-        frame_duration=frame_duration,
+        ffmpeg_path=ffmpeg_path,
+        duration_seconds=video_duration,
         pixel_format=args.pixel_format or PIXEL_FORMAT,
         extra_args=extra_args,
         stabilization=stabilization,
     )
+
+    logger.info('Capture span: %.2f seconds', actual_span)
+    logger.info('Time multiplier: %s', multiplier_label)
 
     try:
         stitch_images_to_video(
             images,
             video_settings.output_path,
             ffmpeg_path=video_settings.ffmpeg_path,
-            frame_rate=video_settings.frame_rate,
-            frame_duration=video_settings.frame_duration,
+            frame_durations=frame_durations,
             pixel_format=video_settings.pixel_format,
             extra_args=video_settings.extra_args,
             logger=logger,

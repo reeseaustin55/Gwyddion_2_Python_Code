@@ -73,18 +73,24 @@ python -m gwyddion_batch.cli D:\Data\MyExperiment --pixels 1024 --channel 0 --ch
 ```
 
 Use `--help` for the full list of options.  Additional flags let you choose the
-output directory, enable automatic video rendering (requires `ffmpeg`), and
-turn on frame stabilization with cropping to the shared overlap of all frames.
+output directory, enable automatic video rendering (requires `ffmpeg`), set the
+target video duration (which controls the playback speed multiplier embedded in
+the filename), and turn on frame stabilization with cropping to the shared
+overlap of all frames.  The `--filter` flag defaults to `.ibw` so the raw Bruker
+files are processed without picking up unrelated data.
 
 ### Video stitching
 
-Processed images are written to a dedicated folder (``processed`` by default).
-Each processed PNG filename now includes the channel number so multiple
-channels can be exported from the same source file without collisions.  When
-video rendering is enabled the tool will invoke `ffmpeg` using a concat file
-similar to the batch scripts provided previously.  You can customise the frame
-rate, per-frame duration, pixel format, and pass through additional arguments to
-`ffmpeg`.  Separate videos are generated for every processed channel.
+Processed images are written to a timestamped subfolder inside the selected data
+directory (for example ``outputs_20250318_143512``).  Each processed PNG
+filename still includes the channel number so multiple channels can be exported
+from the same source file without collisions.  When video rendering is enabled
+the tool will invoke `ffmpeg` using a concat file similar to the batch scripts
+provided previously.  The time span between the first and last source ``.ibw``
+file is divided by the requested video duration to compute a playback speed
+multiplier such as ``4X``; that multiplier is appended to the video filename.  Per
+frame durations are scaled automatically so the final video matches the
+requested length.
 
 Enable the new stabilization option to perform a two-pass `ffmpeg` run using
 ``vidstab`` filters.  The detection pass measures per-frame drift, the
@@ -104,16 +110,19 @@ execute it with Python:
 python run_batch.py
 ```
 
-The script exposes explicit constants for the output subdirectory, video
-rendering options, and stabilization parameters, mirroring the available
-command line flags.
+The script exposes explicit constants for the default filters, optional video
+duration, and stabilization parameters.  Leaving `OUTPUT_SUBDIR` set to `None`
+lets the processor create the timestamped output folder automatically.
 
 `render_video.py` offers the same configurable pattern for stitching images
 that have already been processed.  When launched without arguments it opens a
 folder selection dialog (defaulting to `D:\AFM Images`) so you can point it at
-your processed frames, even on Python 2.7.  Command line flags let you override
-the glob pattern, ffmpeg path, stabilization parameters, and output filename as
-needed:
+your processed frames, even on Python 2.7.  The script reads the modification
+times of the corresponding `.ibw` files to determine the capture span, scales
+the per-frame durations to fit the requested video length, and appends the
+resulting multiplier to the output filename.  Command line flags let you
+override the glob pattern, ffmpeg path, stabilization parameters, source data
+folder, and output filename as needed:
 
 ```bash
 python render_video.py
@@ -132,6 +141,7 @@ This ensures all modules are syntactically correct without requiring the
 Gwyddion libraries at compile time.
 
 Prefer a graphical workflow?  Launch `run_batch_gui.py` to pick the folder,
-channels, pixel count, optional video options, and stabilization controls
+channels, pixel count, optional video duration, and stabilization controls
 through a Tkinter interface.  The folder selector starts in `D:\AFM Images` and
-automatically proposes a `processed` subdirectory for the outputs.
+automatically proposes a timestamped subdirectory for the outputs so each run
+lands in its own folder.

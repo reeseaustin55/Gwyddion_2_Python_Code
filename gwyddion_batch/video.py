@@ -170,7 +170,7 @@ def _build_transform_filter(stabilization, transform_path):
 
 
 def stitch_images_to_video(image_paths, output_path, ffmpeg_path='ffmpeg',
-                           frame_rate=None, frame_duration=None,
+                           frame_durations=None, frame_duration=None,
                            pixel_format='yuv420p', extra_args=None,
                            logger=None, stabilization=None):
     """Combine ``image_paths`` into a video using ffmpeg."""
@@ -189,11 +189,26 @@ def stitch_images_to_video(image_paths, output_path, ffmpeg_path='ffmpeg',
         list_handle, list_path = tempfile.mkstemp(prefix='gwyddion_frames_', suffix='.txt')
         os.close(list_handle)
         with io.open(list_path, 'w', encoding='utf-8') as handle:
-            for path in image_paths:
+            durations = list(frame_durations or [])
+            default_duration = None
+            if frame_duration is not None:
+                default_duration = float(frame_duration)
+            for index, path in enumerate(image_paths):
                 text_path = _ensure_text(path)
                 handle.write(u"file '%s'\n" % _escape_path(text_path))
-                if frame_duration is not None:
-                    handle.write(u'duration %.6f\n' % float(frame_duration))
+                duration_value = None
+                if index < len(durations):
+                    duration_value = durations[index]
+                elif default_duration is not None:
+                    duration_value = default_duration
+                if duration_value is not None:
+                    try:
+                        duration_float = float(duration_value)
+                    except Exception:
+                        duration_float = 0.0
+                    if duration_float <= 0:
+                        duration_float = 1e-3
+                    handle.write(u'duration %.6f\n' % duration_float)
 
         command = [
             to_native_path(ffmpeg_path),
@@ -247,9 +262,7 @@ def stitch_images_to_video(image_paths, output_path, ffmpeg_path='ffmpeg',
         if filters:
             command.extend(['-vf', ','.join(filters)])
 
-        if frame_rate:
-            command.extend(['-r', str(frame_rate)])
-        if frame_duration is not None:
+        if frame_durations or frame_duration is not None:
             command.extend(['-vsync', 'vfr'])
         if pixel_format:
             command.extend(['-pix_fmt', pixel_format])

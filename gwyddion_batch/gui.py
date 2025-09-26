@@ -2,6 +2,7 @@
 
 from __future__ import absolute_import, print_function
 
+import datetime
 import logging
 import os
 import threading
@@ -25,7 +26,8 @@ from .gwyddion_loader import import_gwyddion
 from .processor import GwyddionBatchProcessor
 
 
-DEFAULT_DATA_FOLDER = 'D\\AFM Images'
+DEFAULT_DATA_FOLDER = r'D:\AFM Images'
+DEFAULT_FFMPEG_PATH = r"C:\\Program Files\\ffmpeg-2025-02-24-git-6232f416b1-full_build\\bin\\ffmpeg.exe"
 
 
 class _QueueHandler(logging.Handler):
@@ -63,16 +65,11 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
         )
         self.channels_var = tk.StringVar(value='0')
         self.pixel_count_var = tk.StringVar(value='1024')
-        self.filter_var = tk.StringVar()
+        self.filter_var = tk.StringVar(value='.ibw')
         self.gwy_paths_var = tk.StringVar()
 
         self.video_enabled_var = tk.IntVar()
-        self.video_output_var = tk.StringVar()
-        self.ffmpeg_path_var = tk.StringVar(value='ffmpeg')
-        self.frame_duration_var = tk.StringVar(value='0.1')
-        self.frame_rate_var = tk.StringVar()
-        self.pixel_format_var = tk.StringVar(value='yuv420p')
-        self.extra_args_var = tk.StringVar()
+        self.video_duration_var = tk.StringVar(value='10')
 
         self.stabilize_var = tk.IntVar()
         self.shakiness_var = tk.StringVar(value='5')
@@ -92,8 +89,8 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
         self._add_labeled_entry(main, 'Folder:', self.folder_var, row,
                                 browse_command=self._browse_folder)
         row += 1
-        self._add_labeled_entry(main, 'Output directory:', self.output_dir_var, row,
-                                browse_command=self._browse_output)
+        output_entry = self._add_labeled_entry(main, 'Output directory:', self.output_dir_var, row)
+        output_entry.configure(state='readonly')
         row += 1
         self._add_labeled_entry(main, 'Channels (comma separated):', self.channels_var, row)
         row += 1
@@ -117,18 +114,13 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
                                   command=self._toggle_video_fields)
         video_cb.grid(row=0, column=0, columnspan=3, sticky='w')
 
-        self._add_labeled_entry(video_frame, 'Video output path:', self.video_output_var, 1,
-                                entry_list=self._video_entries)
-        self._add_labeled_entry(video_frame, 'ffmpeg path:', self.ffmpeg_path_var, 2,
-                                entry_list=self._video_entries)
-        self._add_labeled_entry(video_frame, 'Frame duration (s):', self.frame_duration_var, 3,
-                                entry_list=self._video_entries)
-        self._add_labeled_entry(video_frame, 'Frame rate (fps):', self.frame_rate_var, 4,
-                                entry_list=self._video_entries)
-        self._add_labeled_entry(video_frame, 'Pixel format:', self.pixel_format_var, 5,
-                                entry_list=self._video_entries)
-        self._add_labeled_entry(video_frame, 'Extra ffmpeg args:', self.extra_args_var, 6,
-                                entry_list=self._video_entries)
+        self._add_labeled_entry(
+            video_frame,
+            'Video duration (s):',
+            self.video_duration_var,
+            1,
+            entry_list=self._video_entries,
+        )
 
         row += 1
         stab_frame = tk.LabelFrame(main, text='Video stabilization')
@@ -198,7 +190,8 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
     def _default_output_for(self, folder):
         if not folder:
             return ''
-        path = os.path.join(folder, 'processed')
+        timestamp = datetime.datetime.now().strftime('outputs_%Y%m%d_%H%M%S')
+        path = os.path.join(folder, timestamp)
         if ('\\' in folder) and ('/' not in folder):
             path = path.replace('/', '\\')
         return path
@@ -207,10 +200,10 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
         initial = self.folder_var.get() or DEFAULT_DATA_FOLDER
         path = tkFileDialog.askdirectory(initialdir=initial)
         if path:
+            previous_folder = self.folder_var.get()
             current_output = self.output_dir_var.get()
-            previous_default = self._default_output_for(self.folder_var.get())
             self.folder_var.set(path)
-            if (not current_output) or (current_output == previous_default):
+            if (not current_output) or (previous_folder and current_output.startswith(previous_folder)):
                 self.output_dir_var.set(self._default_output_for(path))
 
     def _browse_output(self):
@@ -276,11 +269,18 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
             raise ValueError('Please specify at least one channel number')
 
         pixel_count = int(self.pixel_count_var.get())
-        file_filter = self.filter_var.get().strip() or None
+        file_filter = self.filter_var.get().strip()
+        if file_filter:
+            if file_filter.lower() == 'all':
+                file_filter = None
+            else:
+                if not file_filter.startswith('.'):
+                    file_filter = '.' + file_filter
+                file_filter = file_filter.lower()
+        else:
+            file_filter = None
 
-        output_directory = self.output_dir_var.get().strip()
-        if not output_directory:
-            output_directory = os.path.join(folder, 'processed')
+        output_directory = self.output_dir_var.get().strip() or None
 
         gwy_paths_raw = self.gwy_paths_var.get().strip()
         gwy_paths = []
@@ -291,14 +291,9 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
                     gwy_paths.append(part)
 
         video_enabled = bool(self.video_enabled_var.get())
-
-        frame_duration = self._parse_float(self.frame_duration_var.get())
-        frame_rate = self._parse_float(self.frame_rate_var.get())
-        pixel_format = self.pixel_format_var.get().strip() or 'yuv420p'
-        ffmpeg_path = self.ffmpeg_path_var.get().strip() or 'ffmpeg'
-        video_output = self.video_output_var.get().strip() or None
-        extra_args_text = self.extra_args_var.get().strip()
-        extra_args = extra_args_text.split() if extra_args_text else []
+        video_duration = self._parse_float(self.video_duration_var.get())
+        if video_enabled and (video_duration is None or video_duration <= 0):
+            raise ValueError('Video duration must be greater than zero when video stitching is enabled.')
 
         stabilization_enabled = video_enabled and bool(self.stabilize_var.get())
         stabilization = StabilizationSettings(
@@ -312,18 +307,18 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
             crop_shared_area=bool(self.crop_var.get()),
         )
 
+        ffmpeg_path = DEFAULT_FFMPEG_PATH
+        if not os.path.exists(ffmpeg_path):
+            ffmpeg_path = 'ffmpeg'
+
         video_settings = VideoSettings(
             enabled=video_enabled,
-            output_path=video_output,
             ffmpeg_path=ffmpeg_path,
-            frame_rate=frame_rate,
-            frame_duration=frame_duration,
-            pixel_format=pixel_format,
-            extra_args=extra_args,
+            duration_seconds=video_duration,
             stabilization=stabilization,
         )
 
-        return BatchConfig(
+        config = BatchConfig(
             folder_path=folder,
             channel_numbers=channels,
             pixel_count=pixel_count,
@@ -331,7 +326,11 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
             gwyddion_paths=gwy_paths,
             output_directory=output_directory,
             video_settings=video_settings,
+            run_timestamp=datetime.datetime.now(),
         )
+
+        self.output_dir_var.set(config.output_directory)
+        return config
 
     def _parse_float(self, value):
         value = value.strip() if value else ''

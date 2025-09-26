@@ -7,6 +7,7 @@ import os
 from contextlib import contextmanager
 
 from .compat import to_native_path
+from .config import format_time_multiplier
 from .video import stitch_images_to_video
 
 
@@ -74,6 +75,13 @@ class GwyddionBatchProcessor(object):
         output_directory = config.ensure_output_directory()
         self.logger.info('Processed images will be written to %s', output_directory)
 
+        file_times = {}
+        for path in files:
+            try:
+                file_times[path] = os.path.getmtime(path)
+            except OSError:
+                file_times[path] = None
+
         self.logger.info('Found %d files to process', len(files))
         self.logger.info('Settings: channels=%s, pixels=%d',
                          ','.join(str(c) for c in config.channel_numbers),
@@ -89,6 +97,7 @@ class GwyddionBatchProcessor(object):
             self.logger.info('Processing channel %d', channel_number)
             successes = 0
             output_paths = []
+            capture_times = []
             for path in files:
                 interactive = interactive_pending
                 result = self.process_file(
@@ -103,6 +112,7 @@ class GwyddionBatchProcessor(object):
                 if result:
                     successes += 1
                     output_paths.append(result)
+                    capture_times.append(file_times.get(path))
 
             self.logger.info('Channel %d complete: %d/%d files succeeded',
                              channel_number, successes, len(files))
@@ -115,7 +125,12 @@ class GwyddionBatchProcessor(object):
 
             if config.video.enabled and output_paths:
                 try:
-                    video_path = self._render_video(output_paths, config, channel_number)
+                    video_path = self._render_video(
+                        output_paths,
+                        capture_times,
+                        config,
+                        channel_number,
+                    )
                     video_paths[channel_number] = video_path
                     self.logger.info('Channel %d video written to %s',
                                      channel_number, video_path)
@@ -243,25 +258,104 @@ class GwyddionBatchProcessor(object):
         nm_per_pixel_y = (yreal * 1e9) / float(yres)
         self.logger.info('Original nm/pixel: %.3f x %.3f', nm_per_pixel_x, nm_per_pixel_y)
 
-    def _render_video(self, image_paths, config, channel_number):
-        video_path = config.get_video_output_path(channel_number)
+    def _render_video(self, image_paths, capture_times, config, channel_number):
+        settings = config.video
+
+        frame_count = len(image_paths)
+        actual_duration = self._compute_actual_duration(capture_times)
+        target_duration = settings.duration_seconds
+        if target_duration is None:
+            if actual_duration > 0:
+                target_duration = actual_duration
+            else:
+                target_duration = max(frame_count * 0.1, 10.0)
+        if target_duration <= 0:
+            target_duration = max(frame_count * 0.1, 1.0)
+
+        time_multiplier = None
+        if actual_duration > 0 and target_duration > 0:
+            time_multiplier = actual_duration / float(target_duration)
+
+        frame_durations = self._build_frame_durations(
+            capture_times,
+            frame_count,
+            target_duration,
+            time_multiplier,
+        )
+
+        video_path = config.get_video_output_path(channel_number, time_multiplier)
         if not video_path:
             return None
-        settings = config.video
-        if settings.frame_rate and settings.frame_rate > 0:
-            frame_rate = settings.frame_rate
-        else:
-            frame_rate = None
-        frame_duration = settings.frame_duration if frame_rate is None else None
+
+        label = format_time_multiplier(time_multiplier) if time_multiplier else '1X'
+        self.logger.info('Channel %d capture span: %.2f s; multiplier %s',
+                         channel_number, actual_duration, label)
+
         stitch_images_to_video(
             image_paths,
             video_path,
             ffmpeg_path=settings.ffmpeg_path,
-            frame_rate=frame_rate,
-            frame_duration=frame_duration,
+            frame_durations=frame_durations,
             pixel_format=settings.pixel_format,
             extra_args=settings.extra_args,
             logger=self.logger,
             stabilization=settings.stabilization,
         )
         return video_path
+
+    def _compute_actual_duration(self, capture_times):
+        first = None
+        last = None
+        for timestamp in capture_times:
+            if timestamp is None:
+                continue
+            if first is None:
+                first = timestamp
+            last = timestamp
+        if first is None or last is None:
+            return 0.0
+        if last < first:
+            return 0.0
+        return float(last - first)
+
+    def _build_frame_durations(self, capture_times, frame_count,
+                               target_duration, time_multiplier):
+        if frame_count <= 0:
+            return []
+
+        fallback = target_duration / float(frame_count)
+        if fallback <= 0:
+            fallback = 0.1
+
+        if not capture_times:
+            return [fallback] * frame_count
+
+        aligned = list(capture_times[:frame_count])
+        while len(aligned) < frame_count:
+            aligned.append(None)
+
+        intervals = []
+        for index in range(frame_count - 1):
+            current = aligned[index]
+            nxt = aligned[index + 1]
+            if current is None or nxt is None or nxt < current:
+                intervals.append(None)
+            else:
+                intervals.append(float(nxt - current))
+        if intervals:
+            intervals.append(intervals[-1])
+        else:
+            intervals.append(None)
+
+        durations = []
+        for interval in intervals:
+            if (time_multiplier and time_multiplier > 0 and interval
+                    and interval > 0):
+                durations.append(interval / float(time_multiplier))
+            else:
+                durations.append(fallback)
+        if len(durations) > frame_count:
+            durations = durations[:frame_count]
+        elif len(durations) < frame_count:
+            durations.extend([fallback] * (frame_count - len(durations)))
+        return durations

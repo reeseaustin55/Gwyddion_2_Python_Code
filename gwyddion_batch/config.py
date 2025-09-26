@@ -2,6 +2,7 @@
 
 from __future__ import absolute_import
 
+import datetime
 import os
 
 
@@ -25,17 +26,33 @@ class VideoSettings(object):
     """Configuration for optional video rendering of processed images."""
 
     def __init__(self, enabled=False, output_path=None, ffmpeg_path='ffmpeg',
-                 frame_rate=None, frame_duration=0.1, pixel_format='yuv420p',
+                 duration_seconds=None, pixel_format='yuv420p',
                  extra_args=None, stabilization=None):
         self.enabled = bool(enabled)
         self.output_path = output_path
         self.ffmpeg_path = ffmpeg_path or 'ffmpeg'
-        self.frame_rate = float(frame_rate) if frame_rate else None
-        self.frame_duration = (float(frame_duration)
-                               if frame_duration is not None else None)
+        self.duration_seconds = (float(duration_seconds)
+                                 if duration_seconds is not None else None)
         self.pixel_format = pixel_format or 'yuv420p'
         self.extra_args = list(extra_args or [])
         self.stabilization = stabilization or StabilizationSettings()
+
+
+def format_time_multiplier(multiplier):
+    """Return a human readable multiplier string (e.g. ``'4X'``)."""
+
+    try:
+        value = float(multiplier)
+    except Exception:
+        value = 0.0
+    if not value or value < 0:
+        value = 1.0
+    # Round to two decimals then strip trailing zeros for tidy file names.
+    rounded = round(value, 2)
+    text = ('%.2f' % rounded).rstrip('0').rstrip('.')
+    if not text:
+        text = '1'
+    return text + 'X'
 
 
 class BatchConfig(object):
@@ -44,10 +61,11 @@ class BatchConfig(object):
     def __init__(self, folder_path, channel_number=0, pixel_count=512,
                  file_filter=None, gwyddion_paths=None, output_directory=None,
                  video_settings=None, stabilization_settings=None,
-                 channel_numbers=None):
+                 channel_numbers=None, run_timestamp=None):
         if not folder_path:
             raise ValueError('folder_path is required')
         self.folder_path = os.path.abspath(folder_path)
+        self.run_timestamp = run_timestamp or datetime.datetime.now()
         if channel_numbers is None:
             channel_numbers = []
             if channel_number is not None:
@@ -69,9 +87,11 @@ class BatchConfig(object):
         self.pixel_count = int(pixel_count)
         self.file_filter = (file_filter.lower() if file_filter else None)
         self.gwyddion_paths = list(gwyddion_paths or [])
-        self.output_directory = (os.path.abspath(output_directory)
-                                 if output_directory
-                                 else os.path.join(self.folder_path, 'processed'))
+        if output_directory:
+            self.output_directory = os.path.abspath(output_directory)
+        else:
+            timestamp = self.run_timestamp.strftime('outputs_%Y%m%d_%H%M%S')
+            self.output_directory = os.path.join(self.folder_path, timestamp)
         if video_settings is None:
             video_settings = VideoSettings()
         if stabilization_settings is not None:
@@ -119,7 +139,7 @@ class BatchConfig(object):
             os.makedirs(self.output_directory)
         return self.output_directory
 
-    def get_video_output_path(self, channel_number=None):
+    def get_video_output_path(self, channel_number=None, time_multiplier=None):
         """Return the absolute path for the rendered video file."""
         if not self.video.enabled:
             return None
@@ -129,9 +149,18 @@ class BatchConfig(object):
             else:
                 raise ValueError('channel_number is required when multiple channels are configured')
         if self.video.output_path:
-            return os.path.abspath(self.video.output_path)
+            base_path = os.path.abspath(self.video.output_path)
+            base, ext = os.path.splitext(base_path)
+            if not ext:
+                ext = '.mp4'
+            if time_multiplier is not None:
+                base = '%s_%s' % (base, format_time_multiplier(time_multiplier))
+            return base + ext
         base_name = os.path.basename(os.path.normpath(self.folder_path))
         if not base_name:
             base_name = 'output'
-        file_name = '%s_channel%d.mp4' % (base_name, channel_number)
+        multiplier_part = ''
+        if time_multiplier is not None:
+            multiplier_part = '_%s' % format_time_multiplier(time_multiplier)
+        file_name = '%s_channel%d%s.mp4' % (base_name, channel_number, multiplier_part)
         return os.path.join(self.output_directory, file_name)
