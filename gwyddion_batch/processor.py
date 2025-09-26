@@ -461,15 +461,42 @@ class GwyddionBatchProcessor(object):
             converted = self._normalize_stats_object(stats_obj)
             if converted:
                 return converted
+        gwy = self.gwy
+        function_names = [
+            'gwy_data_field_statistics_get',
+            'gwy_data_field_stats_get',
+        ]
+        for func_name in function_names:
+            func = getattr(gwy, func_name, None)
+            if not callable(func):
+                continue
+            try:
+                stats_obj = func(data_field)
+            except TypeError:
+                try:
+                    stats_obj = func(data_field, None)
+                except Exception:
+                    continue
+            except Exception:
+                continue
+            converted = self._normalize_stats_object(stats_obj)
+            if converted:
+                return converted
         return {}
 
     def _collect_container_stats(self, container, channel_id):
         gwy = self.gwy
-        self._run_process_function(
+        ran = self._run_process_function(
             container,
             'stats',
             description='statistics export',
         )
+        if not ran:
+            self._run_process_function(
+                container,
+                'statistics',
+                description='statistics export',
+            )
         getter = getattr(gwy, 'gwy_container_get_object_by_name', None)
         if getter is None:
             return {}

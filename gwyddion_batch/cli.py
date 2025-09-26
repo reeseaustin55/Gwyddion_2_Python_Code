@@ -38,7 +38,7 @@ def build_arg_parser():
                         help='Length of the rendered video in seconds (default: 10).')
     parser.add_argument('--video-fps', dest='video_fps', type=float,
                         default=None,
-                        help='Optional frame rate for rendered videos. When omitted, ffmpeg uses per-frame durations.')
+                        help='Constant frame rate for rendered videos (default: 30). Use 0 to keep per-frame durations.')
     parser.add_argument('--ffmpeg', dest='ffmpeg_path', default='ffmpeg',
                         help='Path to the ffmpeg executable (default: ffmpeg).')
     parser.add_argument('--pixel-format', dest='pixel_format', default='yuv420p',

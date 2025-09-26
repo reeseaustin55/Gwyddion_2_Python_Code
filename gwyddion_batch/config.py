@@ -63,10 +63,13 @@ class VideoSettings(object):
         self.pixel_format = pixel_format or 'yuv420p'
         self.extra_args = list(extra_args or [])
         self.stabilization = stabilization or StabilizationSettings()
-        try:
-            rate_value = float(frame_rate) if frame_rate is not None else None
-        except Exception:
-            rate_value = None
+        if frame_rate is None:
+            rate_value = 30.0
+        else:
+            try:
+                rate_value = float(frame_rate)
+            except Exception:
+                rate_value = 30.0
         if rate_value is not None and rate_value <= 0:
             rate_value = None
         self.frame_rate = rate_value
