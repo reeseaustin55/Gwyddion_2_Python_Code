@@ -25,6 +25,9 @@ from .gwyddion_loader import import_gwyddion
 from .processor import GwyddionBatchProcessor
 
 
+DEFAULT_DATA_FOLDER = 'D\\AFM Images'
+
+
 class _QueueHandler(logging.Handler):
     """Forward logging messages to a ``Queue`` for UI display."""
 
@@ -54,8 +57,10 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
 
     # ------------------------------------------------------------------ UI --
     def _build_variables(self):
-        self.folder_var = tk.StringVar()
-        self.output_dir_var = tk.StringVar()
+        self.folder_var = tk.StringVar(value=DEFAULT_DATA_FOLDER)
+        self.output_dir_var = tk.StringVar(
+            value=self._default_output_for(DEFAULT_DATA_FOLDER)
+        )
         self.channels_var = tk.StringVar(value='0')
         self.pixel_count_var = tk.StringVar(value='1024')
         self.filter_var = tk.StringVar()
@@ -190,15 +195,29 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
             entry_list.append(entry)
         return entry
 
+    def _default_output_for(self, folder):
+        if not folder:
+            return ''
+        path = os.path.join(folder, 'processed')
+        if ('\\' in folder) and ('/' not in folder):
+            path = path.replace('/', '\\')
+        return path
+
     def _browse_folder(self):
-        path = tkFileDialog.askdirectory()
+        initial = self.folder_var.get() or DEFAULT_DATA_FOLDER
+        path = tkFileDialog.askdirectory(initialdir=initial)
         if path:
+            current_output = self.output_dir_var.get()
+            previous_default = self._default_output_for(self.folder_var.get())
             self.folder_var.set(path)
-            if not self.output_dir_var.get():
-                self.output_dir_var.set(os.path.join(path, 'processed'))
+            if (not current_output) or (current_output == previous_default):
+                self.output_dir_var.set(self._default_output_for(path))
 
     def _browse_output(self):
-        path = tkFileDialog.askdirectory()
+        initial = (self.output_dir_var.get()
+                   or self.folder_var.get()
+                   or DEFAULT_DATA_FOLDER)
+        path = tkFileDialog.askdirectory(initialdir=initial)
         if path:
             self.output_dir_var.set(path)
 

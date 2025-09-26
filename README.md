@@ -109,11 +109,15 @@ rendering options, and stabilization parameters, mirroring the available
 command line flags.
 
 `render_video.py` offers the same configurable pattern for stitching images
-that have already been processed.  Point the script at your processed image
-folder, enable stabilization if desired, and run it directly:
+that have already been processed.  When launched without arguments it opens a
+folder selection dialog (defaulting to `D:\AFM Images`) so you can point it at
+your processed frames, even on Python 2.7.  Command line flags let you override
+the glob pattern, ffmpeg path, stabilization parameters, and output filename as
+needed:
 
 ```bash
 python render_video.py
+python render_video.py --images "D:\\AFM Images\\Video Processing\\Set1\\processed" --stabilize
 ```
 
 ## Development
@@ -129,4 +133,5 @@ Gwyddion libraries at compile time.
 
 Prefer a graphical workflow?  Launch `run_batch_gui.py` to pick the folder,
 channels, pixel count, optional video options, and stabilization controls
-through a Tkinter interface.
+through a Tkinter interface.  The folder selector starts in `D:\AFM Images` and
+automatically proposes a `processed` subdirectory for the outputs.
