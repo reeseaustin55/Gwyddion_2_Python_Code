@@ -276,11 +276,17 @@ def stitch_images_to_video(image_paths, output_path, ffmpeg_path='ffmpeg',
             )
         with io.open(list_path, 'w', encoding='utf-8') as handle:
             if using_repeats and repeat_counts:
+                frame_interval = 1.0 / float(sanitized_rate)
+                last_escaped = None
                 for path, count in zip(image_paths, repeat_counts):
                     text_path = _ensure_text(path)
                     escaped = _escape_path(text_path)
                     for _ in range(count):
                         handle.write(u"file '%s'\n" % escaped)
+                        handle.write(u'duration %.9f\n' % frame_interval)
+                        last_escaped = escaped
+                if last_escaped is not None:
+                    handle.write(u"file '%s'\n" % last_escaped)
             else:
                 if default_duration is None and sanitized_rate:
                     default_duration = 1.0 / float(sanitized_rate)
