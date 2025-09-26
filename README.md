@@ -161,6 +161,20 @@ python render_video.py
 python render_video.py --images "D:\\AFM Images\\Video Processing\\Set1\\processed" --stabilize
 ```
 
+### Windows batch helper
+
+If you prefer the original Windows batch workflow, the repository now ships
+with `render_processed_videos.bat` alongside a companion PowerShell helper.
+Update the variables at the top of the `.bat` file (processed image directory,
+raw `.ibw` folder, desired video duration, ffmpeg path, and whether to emit
+separate UP/DOWN scan videos or ACF videos) and run it from a Windows command
+prompt.  The batch file hands off to `render_processed_videos.ps1`, which
+re-creates the concat manifests, duplicates frames to enforce a constant frame
+rate, computes the capture-span multiplier for the filenames, and calls ffmpeg
+with the same even-dimension safeguards as the Python tooling.  Because the
+PowerShell script reads the `.ibw` timestamps directly it keeps the playback
+speed consistent with the batch processor.
+
 ## Development
 
 Run a basic syntax check with:
