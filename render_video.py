@@ -33,7 +33,7 @@ IMAGE_PATTERN = '*.png'
 OUTPUT_VIDEO = None  # Defaults to <image_directory>/<name>_<multiplier>.mp4 when None
 FFMPEG_PATH = r"C:\\Program Files\\ffmpeg-2025-02-24-git-6232f416b1-full_build\\bin\\ffmpeg.exe"  # Or just 'ffmpeg'
 VIDEO_DURATION = 10.0  # seconds
-VIDEO_FRAME_RATE = 30.0  # frames per second
+VIDEO_FRAME_RATE = None  # Optional constant frame rate; None uses per-frame durations
 PIXEL_FORMAT = 'yuv420p'
 FFMPEG_EXTRA_ARGS = []  # Additional ffmpeg arguments, e.g. ['-vf', 'scale=ceil(iw/2)*2:ceil(ih/2)*2']
 SOURCE_PATTERN = '*.ibw'
@@ -212,7 +212,7 @@ def build_parser():
                         help='Length of the rendered video in seconds (default: %(default)s).')
     parser.add_argument('--video-fps', dest='video_fps', type=float,
                         default=VIDEO_FRAME_RATE,
-                        help='Target video frame rate in frames per second (default: %(default)s).')
+                        help='Optional target video frame rate in frames per second. When omitted, durations control playback.')
     parser.add_argument('--pixel-format', dest='pixel_format', default=PIXEL_FORMAT,
                         help='Pixel format for ffmpeg output (default: %(default)s).')
     parser.add_argument('--extra-arg', dest='extra_args', action='append', default=None,
@@ -300,12 +300,13 @@ def main(argv=None):
         video_duration = max(len(images) * 0.1, 1.0)
 
     frame_rate = args.video_fps if args.video_fps is not None else VIDEO_FRAME_RATE
-    try:
-        frame_rate = float(frame_rate)
-    except Exception:
-        frame_rate = VIDEO_FRAME_RATE
-    if frame_rate <= 0:
-        frame_rate = 30.0
+    if frame_rate is not None:
+        try:
+            frame_rate = float(frame_rate)
+        except Exception:
+            frame_rate = None
+        if frame_rate is not None and frame_rate <= 0:
+            frame_rate = None
 
     source_directory = args.source_directory or os.path.dirname(image_directory) or image_directory
     source_directory = os.path.abspath(source_directory)

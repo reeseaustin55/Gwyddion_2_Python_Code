@@ -53,7 +53,7 @@ class VideoSettings(object):
 
     def __init__(self, enabled=False, output_path=None, ffmpeg_path='ffmpeg',
                  duration_seconds=None, pixel_format='yuv420p',
-                 extra_args=None, stabilization=None, frame_rate=30.0,
+                 extra_args=None, stabilization=None, frame_rate=None,
                  split_scans=False):
         self.enabled = bool(enabled)
         self.output_path = output_path

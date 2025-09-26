@@ -84,9 +84,9 @@ python -m gwyddion_batch.cli D:\Data\MyExperiment --pixels 1024 --channel 0 --ch
 Use `--help` for the full list of options.  Additional flags let you choose the
 output directory, enable automatic video rendering (requires `ffmpeg`), set the
 target video duration (which controls the playback speed multiplier embedded in
-the filename), choose a constant frame rate via `--video-fps`, render alternating
-UP/DOWN scan videos with `--split-scans`, and turn on frame stabilization with
-cropping to the shared overlap of all frames.  The `--filter`
+the filename), optionally force a constant frame rate via `--video-fps`, render
+alternating UP/DOWN scan videos with `--split-scans`, and turn on frame
+stabilization with cropping to the shared overlap of all frames.  The `--filter`
 flag defaults to `.ibw` so the raw Bruker files are processed without picking up
 unrelated data.  Image-processing steps can now be toggled from the CLI as well:
 `--no-flatten`, `--no-align-rows`, `--align-method`, `--align-degree`,
@@ -106,9 +106,10 @@ When video rendering is enabled the tool invokes `ffmpeg` using a concat file
 similar to the batch scripts provided previously.  The time span between the
 first and last source ``.ibw`` file is divided by the requested video duration to
 compute a playback speed multiplier such as ``4X``; that multiplier is appended
-to each rendered video filename.  Frame durations are scaled automatically and
-fed through ffmpeg's `fps` filter so output videos play back at a constant rate
-(30 fps by default) while still honouring the requested total duration.  Enabling
+to each rendered video filename.  By default the concat manifest records per-
+frame durations and ffmpeg runs in variable-frame-rate mode so playback follows
+the requested length without forcing interpolation.  Supplying `--video-fps`
+switches back to constant-frame-rate mode with duplicated frames.  Enabling
 `--split-scans` (or the corresponding GUI checkbox) additionally produces UP and
 DOWN scan videos generated from alternating frames for both the processed data
 and any ACF imagery.
@@ -148,11 +149,12 @@ that have already been processed.  When launched without arguments it opens a
 folder selection dialog (defaulting to `D:\AFM Images`) so you can point it at
 your processed frames, even on Python 2.7.  The script reads the modification
 times of the corresponding `.ibw` files to determine the capture span, scales
-the per-frame durations to fit the requested video length, and then duplicates
-frames at the requested frame rate so the output runs smoothly while preserving
-the overall timing multiplier (which is appended to the filename).  Command line
-flags let you override the glob pattern, ffmpeg path, stabilization parameters,
-source data folder, frame rate, and output filename as needed:
+the per-frame durations to fit the requested video length, and, by default,
+writes a concat manifest that lets ffmpeg play those frames back with variable
+timing.  Supplying `--video-fps` swaps to constant-frame-rate output with
+duplicated frames.  Command line flags let you override the glob pattern, ffmpeg
+path, stabilization parameters, source data folder, frame rate, and output
+filename as needed:
 
 ```bash
 python render_video.py
@@ -171,8 +173,8 @@ This ensures all modules are syntactically correct without requiring the
 Gwyddion libraries at compile time.
 
 Prefer a graphical workflow?  Launch `run_batch_gui.py` to pick the folder,
-channels, pixel count, optional video duration, constant frame rate, and
-stabilization controls through a Tkinter interface.  The folder selector starts
+channels, pixel count, optional video duration, and stabilization controls
+through a Tkinter interface.  The folder selector starts
 in `D:\AFM Images` and automatically proposes a timestamped
 `output_YYYYMMDD_HHMMSS` subdirectory so each run lands in its own folder.  New
 checkboxes let you toggle flattening, row alignment (median of differences or a

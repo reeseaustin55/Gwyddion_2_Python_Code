@@ -367,10 +367,10 @@ def stitch_images_to_video(image_paths, output_path, ffmpeg_path='ffmpeg',
             command.extend(['-vf', ','.join(filters)])
 
         if sanitized_rate:
-            command.extend(['-vsync', 'cfr'])
+            command.extend(['-fps_mode', 'cfr'])
             command.extend(['-r', '%.6f' % float(sanitized_rate)])
         elif frame_durations or frame_duration is not None:
-            command.extend(['-vsync', 'vfr'])
+            command.extend(['-fps_mode', 'vfr'])
         if pixel_format:
             command.extend(['-pix_fmt', pixel_format])
         for arg in extra_args:

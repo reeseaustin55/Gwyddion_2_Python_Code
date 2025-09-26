@@ -74,16 +74,27 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
         return {}
 
     def _save_persisted_settings(self, config):
+        output_directory = self.output_dir_var.get()
+        output_parent = ''
+        if output_directory:
+            normalized = output_directory.rstrip('\\/')
+            if normalized:
+                base_name = os.path.basename(normalized)
+                if base_name and base_name.lower().startswith('output_'):
+                    output_parent = os.path.dirname(normalized)
+                else:
+                    output_parent = normalized
+
         data = {
             'folder': self.folder_var.get(),
-            'output_directory': self.output_dir_var.get(),
+            'output_directory': output_directory,
+            'output_parent': output_parent,
             'channels': self.channels_var.get(),
             'pixel_count': self.pixel_count_var.get(),
             'file_filter': self.filter_var.get(),
             'video': {
                 'enabled': bool(self.video_enabled_var.get()),
                 'duration': self.video_duration_var.get(),
-                'frame_rate': self.video_frame_rate_var.get(),
                 'split_scans': bool(self.video_split_var.get()),
                 'stabilization': {
                     'enabled': bool(self.stabilize_var.get()),
@@ -117,7 +128,18 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
     def _build_variables(self):
         defaults = self._defaults
         folder_default = defaults.get('folder', DEFAULT_DATA_FOLDER)
+        output_parent = defaults.get('output_parent')
         output_default = defaults.get('output_directory')
+        if output_parent:
+            output_default = self._default_output_for(output_parent)
+        elif output_default:
+            normalized = output_default.rstrip('\\/')
+            if normalized:
+                base_name = os.path.basename(normalized)
+                if base_name and base_name.lower().startswith('output_'):
+                    parent = os.path.dirname(normalized)
+                    reference = parent or folder_default
+                    output_default = self._default_output_for(reference)
         if not output_default:
             output_default = self._default_output_for(folder_default)
 
@@ -130,7 +152,6 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
         video_defaults = defaults.get('video', {})
         self.video_enabled_var = tk.IntVar(value=1 if video_defaults.get('enabled') else 0)
         self.video_duration_var = tk.StringVar(value=str(video_defaults.get('duration', '10')))
-        self.video_frame_rate_var = tk.StringVar(value=str(video_defaults.get('frame_rate', '30')))
         self.video_split_var = tk.IntVar(value=1 if video_defaults.get('split_scans') else 0)
 
         stabilization_defaults = video_defaults.get('stabilization', {})
@@ -256,20 +277,12 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
             1,
             entry_list=self._video_entries,
         )
-        self._add_labeled_entry(
-            video_frame,
-            'Video FPS:',
-            self.video_frame_rate_var,
-            2,
-            entry_list=self._video_entries,
-        )
-
         split_cb = tk.Checkbutton(
             video_frame,
             text='Split UP/DOWN scans',
             variable=self.video_split_var,
         )
-        split_cb.grid(row=3, column=0, columnspan=3, sticky='w')
+        split_cb.grid(row=2, column=0, columnspan=3, sticky='w')
         self._video_checkbuttons.append(split_cb)
 
         row += 1
@@ -340,7 +353,7 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
 
     def _default_output_for(self, folder):
         if not folder:
-            return ''
+            folder = DEFAULT_DATA_FOLDER
         timestamp = datetime.datetime.now().strftime('output_%Y%m%d_%H%M%S')
         folder = folder.rstrip('\\/')
         if ('/' in folder) and ('\\' not in folder):
@@ -454,11 +467,7 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
         video_duration = self._parse_float(self.video_duration_var.get())
         if video_enabled and (video_duration is None or video_duration <= 0):
             raise ValueError('Video duration must be greater than zero when video stitching is enabled.')
-        frame_rate = self._parse_float(self.video_frame_rate_var.get())
-        if video_enabled and (frame_rate is None or frame_rate <= 0):
-            raise ValueError('Video frame rate must be greater than zero when video stitching is enabled.')
-        if not video_enabled:
-            frame_rate = None
+        frame_rate = None
         split_scans = bool(self.video_split_var.get()) if video_enabled else False
 
         stabilization_enabled = video_enabled and bool(self.stabilize_var.get())
@@ -482,7 +491,6 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
             ffmpeg_path=ffmpeg_path,
             duration_seconds=video_duration,
             stabilization=stabilization,
-            frame_rate=frame_rate,
             split_scans=split_scans,
         )
 

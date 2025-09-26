@@ -29,7 +29,6 @@ OUTPUT_SUBDIR = None  # Use the timestamped ``output_YYYYMMDD_HHMMSS`` default w
 VIDEO_ENABLED = False
 FFMPEG_PATH = r"C:\\Program Files\\ffmpeg-2025-02-24-git-6232f416b1-full_build\\bin\\ffmpeg.exe"  # Or just 'ffmpeg' if on PATH
 VIDEO_DURATION = 10.0  # seconds
-VIDEO_FRAME_RATE = 30.0  # frames per second
 # When enabled, render separate UP/DOWN videos using alternating frames
 VIDEO_SPLIT_SCANS = False
 # Pixel format is fixed to yuv420p by default in the helper
@@ -74,7 +73,7 @@ def main():
         ffmpeg_path=FFMPEG_PATH,
         duration_seconds=VIDEO_DURATION,
         stabilization=stabilization_settings,
-        frame_rate=VIDEO_FRAME_RATE if VIDEO_ENABLED else None,
+        frame_rate=None,
         split_scans=VIDEO_SPLIT_SCANS,
     )
 
