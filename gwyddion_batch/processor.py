@@ -50,6 +50,7 @@ class GwyddionBatchProcessor(object):
     def __init__(self, gwy_module, logger=None):
         self.gwy = gwy_module
         self.logger = logger or logging.getLogger(self.__class__.__name__)
+        self._unavailable_functions = set()
 
     @contextmanager
     def _open_container(self, file_path):
@@ -260,16 +261,68 @@ class GwyddionBatchProcessor(object):
             'stats_path': stats_path,
         }
 
-    def _apply_pre_scaling_steps(self, container, settings, options):
+    def _run_process_function(self, container, func_name, description=None,
+                              required=False):
+        """Execute a Gwyddion processing function if available."""
         gwy = self.gwy
+        desc = description or func_name
+        if func_name in self._unavailable_functions:
+            if required:
+                raise RuntimeError('Gwyddion function %s is required for %s but '
+                                   'has been marked unavailable' % (func_name, desc))
+            self.logger.debug('Skipping %s: previously marked unavailable', func_name)
+            return False
+        exists_func = getattr(gwy, 'gwy_process_func_exists', None)
+        available = True
+        if callable(exists_func):
+            try:
+                available = bool(exists_func(func_name))
+            except Exception as exc:
+                available = True
+                self.logger.debug('Could not confirm availability of %s: %s',
+                                  func_name, exc)
+        if not available:
+            message = 'Gwyddion function %s is not available; skipping %s'
+            if required:
+                raise RuntimeError(message % (func_name, desc))
+            if func_name not in self._unavailable_functions:
+                self.logger.warning(message, func_name, desc)
+                self._unavailable_functions.add(func_name)
+            return False
+        try:
+            gwy.gwy_process_func_run(func_name, container, gwy.RUN_IMMEDIATE)
+            return True
+        except Exception as exc:
+            if required:
+                raise RuntimeError('Failed to run %s: %s' % (desc, exc))
+            if func_name not in self._unavailable_functions:
+                self.logger.warning('Failed to run %s (%s); skipping. Error: %s',
+                                    func_name, desc, exc)
+                self._unavailable_functions.add(func_name)
+            else:
+                self.logger.debug('Skipping %s after previous failure: %s',
+                                  func_name, exc)
+            self.logger.debug('Detailed error when running %s', func_name,
+                              exc_info=True)
+            return False
+
+    def _apply_pre_scaling_steps(self, container, settings, options):
         if options.flatten:
             self.logger.debug('Applying flattening before scaling')
-            gwy.gwy_process_func_run('level', container, gwy.RUN_IMMEDIATE)
+            self._run_process_function(
+                container,
+                'level',
+                description='flattening',
+            )
         if options.align_rows:
             self._run_align_rows(container, settings, options)
         if options.remove_scars:
             self.logger.debug('Removing scars')
-            gwy.gwy_process_func_run('remove_scars', container, gwy.RUN_IMMEDIATE)
+            self._run_process_function(
+                container,
+                'remove_scars',
+                description='scar removal',
+            )
             if options.align_rows:
                 self.logger.debug('Re-aligning rows after scar removal')
                 self._run_align_rows(container, settings, options)
@@ -282,13 +335,22 @@ class GwyddionBatchProcessor(object):
         settings.set_double_by_name('/module/scale/ratio', float(pixel_count) / float(xres))
         settings.set_boolean_by_name('/module/scale/proportional', False)
         settings.set_double_by_name('/module/scale/aspectratio', float(xres) / float(yres))
-        gwy.gwy_process_func_run('scale', container, gwy.RUN_IMMEDIATE)
+        self._run_process_function(
+            container,
+            'scale',
+            description='scaling',
+            required=True,
+        )
 
     def _apply_post_scaling_steps(self, container, settings, options):
         gwy = self.gwy
         if options.flatten:
             self.logger.debug('Flattening scaled data')
-            gwy.gwy_process_func_run('level', container, gwy.RUN_IMMEDIATE)
+            self._run_process_function(
+                container,
+                'level',
+                description='flattening',
+            )
         if options.align_rows:
             self.logger.debug('Aligning rows on scaled data')
             self._run_align_rows(container, settings, options)
@@ -296,7 +358,11 @@ class GwyddionBatchProcessor(object):
             data_field = gwy.gwy_app_data_browser_get_current(gwy.APP_DATA_FIELD)
             if self._is_height_channel(data_field):
                 self.logger.debug('Applying fix-zero to height channel')
-                gwy.gwy_process_func_run('fix_zero', container, gwy.RUN_IMMEDIATE)
+                self._run_process_function(
+                    container,
+                    'fix_zero',
+                    description='fix-zero',
+                )
             else:
                 self.logger.debug('Skipping fix-zero for non-height channel')
 
@@ -314,7 +380,11 @@ class GwyddionBatchProcessor(object):
                 degree_value = 0
             settings.set_int32_by_name('/module/linematch/degree', degree_value)
         self.logger.debug('Running align_rows with method %d', method)
-        gwy.gwy_process_func_run('align_rows', container, gwy.RUN_IMMEDIATE)
+        self._run_process_function(
+            container,
+            'align_rows',
+            description='row alignment',
+        )
 
     def _is_height_channel(self, data_field):
         if data_field is None:
@@ -395,10 +465,11 @@ class GwyddionBatchProcessor(object):
 
     def _collect_container_stats(self, container, channel_id):
         gwy = self.gwy
-        try:
-            gwy.gwy_process_func_run('stats', container, gwy.RUN_IMMEDIATE)
-        except Exception:
-            pass
+        self._run_process_function(
+            container,
+            'stats',
+            description='statistics export',
+        )
         getter = getattr(gwy, 'gwy_container_get_object_by_name', None)
         if getter is None:
             return {}
@@ -524,7 +595,13 @@ class GwyddionBatchProcessor(object):
             except Exception:
                 pass
         try:
-            gwy.gwy_process_func_run('acf2d', container, gwy.RUN_IMMEDIATE)
+            ran = self._run_process_function(
+                container,
+                'acf2d',
+                description='ACF generation',
+            )
+            if not ran:
+                return None
             data_ids = gwy.gwy_app_data_browser_get_data_ids(container)
             if not data_ids:
                 return None

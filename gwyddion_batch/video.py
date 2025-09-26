@@ -186,6 +186,20 @@ def stitch_images_to_video(image_paths, output_path, ffmpeg_path='ffmpeg',
 
     list_path = None
     transform_path = None
+    ensure_even_filter = None
+    try:
+        first_path = image_paths[0]
+        width, height = _probe_png_size(first_path)
+        if width % 2 or height % 2:
+            ensure_even_filter = 'scale=ceil(iw/2)*2:ceil(ih/2)*2'
+            if logger:
+                logger.info('Ensuring even frame dimensions for video output (%dx%d)',
+                            width, height)
+    except Exception as exc:
+        ensure_even_filter = None
+        if logger:
+            logger.debug('Unable to read image dimensions for even scaling: %s', exc)
+
     try:
         list_handle, list_path = tempfile.mkstemp(prefix='gwyddion_frames_', suffix='.txt')
         os.close(list_handle)
@@ -281,6 +295,9 @@ def stitch_images_to_video(image_paths, output_path, ffmpeg_path='ffmpeg',
                 if logger:
                     logger.info('Cropping stabilized video to %dx%d at %d,%d', crop_w, crop_h, crop_x, crop_y)
                 filters.append('crop=%d:%d:%d:%d' % (crop_w, crop_h, crop_x, crop_y))
+
+        if ensure_even_filter:
+            filters.append(ensure_even_filter)
 
         if sanitized_rate:
             rate_filter = 'fps=%.6f' % float(sanitized_rate)
