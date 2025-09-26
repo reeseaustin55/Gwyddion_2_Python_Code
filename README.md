@@ -82,7 +82,7 @@ files are processed without picking up unrelated data.
 ### Video stitching
 
 Processed images are written to a timestamped subfolder inside the selected data
-directory (for example ``outputs_20250318_143512``).  Each processed PNG
+directory (for example ``output_20250318_143512``).  Each processed PNG
 filename still includes the channel number so multiple channels can be exported
 from the same source file without collisions.  When video rendering is enabled
 the tool will invoke `ffmpeg` using a concat file similar to the batch scripts
@@ -143,5 +143,5 @@ Gwyddion libraries at compile time.
 Prefer a graphical workflow?  Launch `run_batch_gui.py` to pick the folder,
 channels, pixel count, optional video duration, and stabilization controls
 through a Tkinter interface.  The folder selector starts in `D:\AFM Images` and
-automatically proposes a timestamped subdirectory for the outputs so each run
-lands in its own folder.
+automatically proposes a timestamped `output_YYYYMMDD_HHMMSS` subdirectory so
+each run lands in its own folder.

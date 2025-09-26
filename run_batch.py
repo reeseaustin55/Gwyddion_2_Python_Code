@@ -19,8 +19,10 @@ FOLDER_PATH = r'D:\AFM Images\hopg_CORROSION_100mMHClO4_N2flow_Irtip_09162025\2n
 CHANNEL_NUMBERS = [0]
 PIXEL_COUNT = 1024
 FILE_FILTER = '.ibw'
-ADDITIONAL_GWY_PATHS = [r"C:\\Program Files (x86)\\Gwyddion\\bin"]
-OUTPUT_SUBDIR = None  # Use the timestamped default when ``None``
+# The loader automatically searches common install locations such as
+# ``C:\\Program Files (x86)\\Gwyddion\\bin`` so extra paths are rarely needed.
+ADDITIONAL_GWY_PATHS = []
+OUTPUT_SUBDIR = None  # Use the timestamped ``output_YYYYMMDD_HHMMSS`` default when ``None``
 
 # Video rendering settings -------------------------------------------------
 VIDEO_ENABLED = False

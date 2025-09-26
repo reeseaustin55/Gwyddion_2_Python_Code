@@ -66,7 +66,6 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
         self.channels_var = tk.StringVar(value='0')
         self.pixel_count_var = tk.StringVar(value='1024')
         self.filter_var = tk.StringVar(value='.ibw')
-        self.gwy_paths_var = tk.StringVar()
 
         self.video_enabled_var = tk.IntVar()
         self.video_duration_var = tk.StringVar(value='10')
@@ -97,8 +96,6 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
         self._add_labeled_entry(main, 'Pixel count:', self.pixel_count_var, row)
         row += 1
         self._add_labeled_entry(main, 'File filter (e.g. .spm):', self.filter_var, row)
-        row += 1
-        self._add_labeled_entry(main, 'Additional Gwyddion paths:', self.gwy_paths_var, row)
         row += 1
 
         self._video_entries = []
@@ -190,7 +187,10 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
     def _default_output_for(self, folder):
         if not folder:
             return ''
-        timestamp = datetime.datetime.now().strftime('outputs_%Y%m%d_%H%M%S')
+        timestamp = datetime.datetime.now().strftime('output_%Y%m%d_%H%M%S')
+        folder = folder.rstrip('\\/')
+        if ('/' in folder) and ('\\' not in folder):
+            return folder + '/' + timestamp
         path = os.path.join(folder, timestamp)
         if ('\\' in folder) and ('/' not in folder):
             path = path.replace('/', '\\')
@@ -282,14 +282,6 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
 
         output_directory = self.output_dir_var.get().strip() or None
 
-        gwy_paths_raw = self.gwy_paths_var.get().strip()
-        gwy_paths = []
-        if gwy_paths_raw:
-            for part in gwy_paths_raw.replace(';', '\n').splitlines():
-                part = part.strip()
-                if part:
-                    gwy_paths.append(part)
-
         video_enabled = bool(self.video_enabled_var.get())
         video_duration = self._parse_float(self.video_duration_var.get())
         if video_enabled and (video_duration is None or video_duration <= 0):
@@ -323,7 +315,6 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
             channel_numbers=channels,
             pixel_count=pixel_count,
             file_filter=file_filter,
-            gwyddion_paths=gwy_paths,
             output_directory=output_directory,
             video_settings=video_settings,
             run_timestamp=datetime.datetime.now(),

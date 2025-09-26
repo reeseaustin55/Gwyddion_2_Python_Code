@@ -55,6 +55,56 @@ def format_time_multiplier(multiplier):
     return text + 'X'
 
 
+def _detect_path_style(path):
+    """Return the predominant separator style used in ``path``."""
+
+    if not path:
+        return None
+    has_forward = '/' in path
+    has_backward = '\\' in path
+    if has_forward and not has_backward:
+        return 'forward'
+    if has_backward and not has_forward:
+        return 'backward'
+    return None
+
+
+def _normalize_base_path(path):
+    """Return ``path`` if it is already absolute (including Windows drives)."""
+
+    if not path:
+        return path
+    if os.path.isabs(path):
+        return path
+    if len(path) > 1 and path[1] == ':' and path[0].isalpha():
+        return path
+    return os.path.abspath(path)
+
+
+def _apply_path_style(path, style):
+    """Normalize separators in ``path`` based on ``style``."""
+
+    if not path or style is None:
+        return path
+    if style == 'forward':
+        return path.replace('\\', '/')
+    if style == 'backward':
+        return path.replace('/', '\\')
+    return path
+
+
+def _join_child_path(base_path, child, style):
+    """Join ``child`` to ``base_path`` while respecting ``style`` separators."""
+
+    if not base_path:
+        return child
+    if style == 'forward':
+        return base_path.rstrip('\\/') + '/' + child
+    if style == 'backward':
+        return base_path.rstrip('\\/') + '\\' + child
+    return os.path.join(base_path, child)
+
+
 class BatchConfig(object):
     """Container for settings used during batch processing."""
 
@@ -64,7 +114,10 @@ class BatchConfig(object):
                  channel_numbers=None, run_timestamp=None):
         if not folder_path:
             raise ValueError('folder_path is required')
-        self.folder_path = os.path.abspath(folder_path)
+        path_style = _detect_path_style(folder_path)
+        normalized_folder = _normalize_base_path(folder_path)
+        self.folder_path = _apply_path_style(normalized_folder, path_style)
+        self._path_style = path_style
         self.run_timestamp = run_timestamp or datetime.datetime.now()
         if channel_numbers is None:
             channel_numbers = []
@@ -88,10 +141,12 @@ class BatchConfig(object):
         self.file_filter = (file_filter.lower() if file_filter else None)
         self.gwyddion_paths = list(gwyddion_paths or [])
         if output_directory:
-            self.output_directory = os.path.abspath(output_directory)
+            normalized_output = _normalize_base_path(output_directory)
+            self.output_directory = _apply_path_style(normalized_output, path_style)
         else:
-            timestamp = self.run_timestamp.strftime('outputs_%Y%m%d_%H%M%S')
-            self.output_directory = os.path.join(self.folder_path, timestamp)
+            timestamp = self.run_timestamp.strftime('output_%Y%m%d_%H%M%S')
+            default_output = _join_child_path(self.folder_path, timestamp, path_style)
+            self.output_directory = default_output
         if video_settings is None:
             video_settings = VideoSettings()
         if stabilization_settings is not None:
