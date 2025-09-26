@@ -16,7 +16,7 @@ from gwyddion_batch import (
 
 # USER SETTINGS - MODIFY THESE VALUES ---------------------------------------
 FOLDER_PATH = r'D:\AFM Images\hopg_CORROSION_100mMHClO4_N2flow_Irtip_09162025\2nd attempt\Set1'
-CHANNEL_NUMBER = 0
+CHANNEL_NUMBERS = [0]
 PIXEL_COUNT = 1024
 FILE_FILTER = None  # e.g. '.spm'
 ADDITIONAL_GWY_PATHS = [r"C:\\Program Files (x86)\\Gwyddion\\bin"]
@@ -69,7 +69,7 @@ def main():
 
     config = BatchConfig(
         folder_path=FOLDER_PATH,
-        channel_number=CHANNEL_NUMBER,
+        channel_numbers=CHANNEL_NUMBERS,
         pixel_count=PIXEL_COUNT,
         file_filter=FILE_FILTER,
         gwyddion_paths=ADDITIONAL_GWY_PATHS,
@@ -84,8 +84,11 @@ def main():
     logging.info('Finished with %d/%d successes', result['processed'], result['total'])
     if result.get('output_directory'):
         logging.info('Processed images saved to %s', result['output_directory'])
-    if result.get('video_path'):
-        logging.info('Video written to %s', result['video_path'])
+    for channel, details in sorted(result.get('per_channel', {}).items()):
+        logging.info('Channel %d: %d/%d images saved',
+                     channel, details.get('processed', 0), details.get('total', 0))
+    for channel, video_path in sorted(result.get('video_paths', {}).items()):
+        logging.info('Channel %d video written to %s', channel, video_path)
 
 
 if __name__ == '__main__':

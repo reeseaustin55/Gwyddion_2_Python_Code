@@ -15,6 +15,7 @@ gwyddion_batch/
 ├── cli.py                 # argparse-based command line interface
 ├── config.py              # Configuration helpers and validation
 ├── gwyddion_loader.py     # Utilities for importing the gwy module
+├── gui.py                 # Tkinter GUI for interactive configuration
 ├── processor.py           # Core processing logic
 └── video.py               # ffmpeg-based video stitching helpers
 ```
@@ -27,6 +28,8 @@ original script:
   video creation).
 * `render_video.py` stitches already-processed images into a video without
   reprocessing the raw SPM data.
+* `run_batch_gui.py` launches the GUI for selecting folders, channels, and
+  other user-configurable settings.
 
 ## Installation
 
@@ -49,7 +52,7 @@ from gwyddion_batch import BatchConfig, GwyddionBatchProcessor, import_gwyddion
 
 config = BatchConfig(
     folder_path=r"D:\\Data\\MyExperiment",
-    channel_number=0,
+    channel_numbers=[0, 1],
     pixel_count=1024,
 )
 
@@ -57,14 +60,16 @@ gwy = import_gwyddion(config.gwyddion_paths)
 processor = GwyddionBatchProcessor(gwy)
 result = processor.process_folder(config)
 print('Processed images saved to', result['output_directory'])
-if result.get('video_path'):
-    print('Video created at', result['video_path'])
+for channel, details in sorted(result.get('per_channel', {}).items()):
+    print('Channel %d -> %d/%d images' % (channel, details['processed'], details['total']))
+for channel, video_path in sorted(result.get('video_paths', {}).items()):
+    print('Channel %d video created at %s' % (channel, video_path))
 ```
 
 ### Command line interface
 
 ```bash
-python -m gwyddion_batch.cli D:\Data\MyExperiment --pixels 1024 --channel 0
+python -m gwyddion_batch.cli D:\Data\MyExperiment --pixels 1024 --channel 0 --channel 1
 ```
 
 Use `--help` for the full list of options.  Additional flags let you choose the
@@ -74,10 +79,12 @@ turn on frame stabilization with cropping to the shared overlap of all frames.
 ### Video stitching
 
 Processed images are written to a dedicated folder (``processed`` by default).
-When video rendering is enabled the tool will invoke `ffmpeg` using a concat
-file similar to the batch scripts provided previously.  You can customise the
-frame rate, per-frame duration, pixel format, and pass through additional
-arguments to `ffmpeg`.
+Each processed PNG filename now includes the channel number so multiple
+channels can be exported from the same source file without collisions.  When
+video rendering is enabled the tool will invoke `ffmpeg` using a concat file
+similar to the batch scripts provided previously.  You can customise the frame
+rate, per-frame duration, pixel format, and pass through additional arguments to
+`ffmpeg`.  Separate videos are generated for every processed channel.
 
 Enable the new stabilization option to perform a two-pass `ffmpeg` run using
 ``vidstab`` filters.  The detection pass measures per-frame drift, the
@@ -90,7 +97,8 @@ shared image area to avoid edge artifacts.  CLI flags (``--stabilize``,
 
 The `run_batch.py` script keeps the editable constants approach of the original
 script while delegating the heavy lifting to the reusable package.  Adjust the
-constants at the top of the file and execute it with Python:
+constants (including the list of channel numbers) at the top of the file and
+execute it with Python:
 
 ```bash
 python run_batch.py
@@ -113,8 +121,12 @@ python render_video.py
 Run a basic syntax check with:
 
 ```bash
-python -m compileall gwyddion_batch run_batch.py render_video.py
+python -m compileall gwyddion_batch run_batch.py run_batch_gui.py render_video.py
 ```
 
 This ensures all modules are syntactically correct without requiring the
 Gwyddion libraries at compile time.
+
+Prefer a graphical workflow?  Launch `run_batch_gui.py` to pick the folder,
+channels, pixel count, optional video options, and stabilization controls
+through a Tkinter interface.

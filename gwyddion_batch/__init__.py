@@ -7,6 +7,11 @@ from .processor import GwyddionBatchProcessor, get_supported_extensions, generat
 from .gwyddion_loader import import_gwyddion
 from .video import stitch_images_to_video
 
+try:  # GUI support requires Tkinter which may be unavailable on some systems
+    from .gui import BatchProcessorGUI
+except Exception:  # pragma: no cover - optional dependency
+    BatchProcessorGUI = None
+
 __all__ = [
     'BatchConfig',
     'GwyddionBatchProcessor',
@@ -17,3 +22,6 @@ __all__ = [
     'StabilizationSettings',
     'stitch_images_to_video',
 ]
+
+if BatchProcessorGUI is not None:
+    __all__.append('BatchProcessorGUI')

@@ -43,11 +43,29 @@ class BatchConfig(object):
 
     def __init__(self, folder_path, channel_number=0, pixel_count=512,
                  file_filter=None, gwyddion_paths=None, output_directory=None,
-                 video_settings=None, stabilization_settings=None):
+                 video_settings=None, stabilization_settings=None,
+                 channel_numbers=None):
         if not folder_path:
             raise ValueError('folder_path is required')
         self.folder_path = os.path.abspath(folder_path)
-        self.channel_number = int(channel_number)
+        if channel_numbers is None:
+            channel_numbers = []
+            if channel_number is not None:
+                channel_numbers.append(int(channel_number))
+            else:
+                channel_numbers.append(0)
+        normalized = []
+        seen = {}
+        for value in channel_numbers:
+            channel = int(value)
+            if channel in seen:
+                continue
+            seen[channel] = True
+            normalized.append(channel)
+        if not normalized:
+            raise ValueError('At least one channel number must be provided')
+        self.channel_numbers = normalized
+        self.channel_number = self.channel_numbers[0]
         self.pixel_count = int(pixel_count)
         self.file_filter = (file_filter.lower() if file_filter else None)
         self.gwyddion_paths = list(gwyddion_paths or [])
@@ -75,8 +93,9 @@ class BatchConfig(object):
             raise ValueError('%r is not a directory' % self.folder_path)
         if self.pixel_count <= 0:
             raise ValueError('pixel_count must be positive')
-        if self.channel_number < 0:
-            raise ValueError('channel_number must be non-negative')
+        for channel in self.channel_numbers:
+            if channel < 0:
+                raise ValueError('channel numbers must be non-negative')
         if (os.path.exists(self.output_directory) and
                 not os.path.isdir(self.output_directory)):
             raise ValueError('%r exists and is not a directory' % self.output_directory)
@@ -100,14 +119,19 @@ class BatchConfig(object):
             os.makedirs(self.output_directory)
         return self.output_directory
 
-    def get_video_output_path(self):
+    def get_video_output_path(self, channel_number=None):
         """Return the absolute path for the rendered video file."""
         if not self.video.enabled:
             return None
+        if channel_number is None:
+            if len(self.channel_numbers) == 1:
+                channel_number = self.channel_numbers[0]
+            else:
+                raise ValueError('channel_number is required when multiple channels are configured')
         if self.video.output_path:
             return os.path.abspath(self.video.output_path)
         base_name = os.path.basename(os.path.normpath(self.folder_path))
         if not base_name:
             base_name = 'output'
-        file_name = '%s_channel%d.mp4' % (base_name, self.channel_number)
+        file_name = '%s_channel%d.mp4' % (base_name, channel_number)
         return os.path.join(self.output_directory, file_name)

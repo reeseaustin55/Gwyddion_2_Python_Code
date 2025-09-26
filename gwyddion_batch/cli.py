@@ -14,8 +14,9 @@ from .processor import GwyddionBatchProcessor
 def build_arg_parser():
     parser = argparse.ArgumentParser(description='Batch process AFM/SPM images with Gwyddion.')
     parser.add_argument('folder', help='Folder containing the data files to process.')
-    parser.add_argument('--channel', type=int, default=0,
-                        help='Channel number to process (default: 0).')
+    parser.add_argument('--channel', '--channels', dest='channels', action='append',
+                        type=int, default=None,
+                        help='Channel number to process (default: 0). May be specified multiple times.')
     parser.add_argument('--pixels', type=int, default=512,
                         help='Target pixel count for scaling (default: 512).')
     parser.add_argument('--filter', dest='file_filter', default=None,
@@ -107,9 +108,11 @@ def main(argv=None):
             stabilization=stabilization_settings,
         )
 
+        channel_numbers = args.channels or [0]
+
         config = BatchConfig(
             folder_path=args.folder,
-            channel_number=args.channel,
+            channel_numbers=channel_numbers,
             pixel_count=args.pixels,
             file_filter=args.file_filter,
             gwyddion_paths=args.gwyddion_paths,

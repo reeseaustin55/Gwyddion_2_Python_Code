@@ -21,14 +21,21 @@ def get_supported_extensions():
     return list(SUPPORTED_EXTENSIONS)
 
 
-def generate_output_path(input_path, pixel_count, width_nm, output_directory=None):
+def generate_output_path(input_path, pixel_count, width_nm, channel_number=0,
+                         output_directory=None):
     """Generate the output PNG file path for ``input_path``."""
     import os
 
     directory = output_directory or os.path.dirname(input_path)
     base_name = os.path.splitext(os.path.basename(input_path))[0]
     width_nm_int = int(round(width_nm))
-    return os.path.join(directory, '%dpx_%dnm_%s.png' % (pixel_count, width_nm_int, base_name))
+    file_name = '%dpx_%dnm_channel%d_%s.png' % (
+        pixel_count,
+        width_nm_int,
+        int(channel_number),
+        base_name,
+    )
+    return os.path.join(directory, file_name)
 
 
 class GwyddionBatchProcessor(object):
@@ -68,41 +75,61 @@ class GwyddionBatchProcessor(object):
         self.logger.info('Processed images will be written to %s', output_directory)
 
         self.logger.info('Found %d files to process', len(files))
-        self.logger.info('Settings: channel=%d, pixels=%d',
-                         config.channel_number, config.pixel_count)
+        self.logger.info('Settings: channels=%s, pixels=%d',
+                         ','.join(str(c) for c in config.channel_numbers),
+                         config.pixel_count)
 
-        successes = 0
-        output_paths = []
-        for index, path in enumerate(files):
-            interactive = (index == 0)
-            result = self.process_file(
-                path,
-                config.channel_number,
-                config.pixel_count,
-                interactive,
-                output_directory,
-            )
-            if result:
-                successes += 1
-                output_paths.append(result)
+        overall_processed = 0
+        overall_total = len(files) * len(config.channel_numbers)
+        per_channel = {}
+        video_paths = {}
+        interactive_pending = True
 
-        self.logger.info('Processing complete: %d/%d files succeeded', successes, len(files))
+        for channel_number in config.channel_numbers:
+            self.logger.info('Processing channel %d', channel_number)
+            successes = 0
+            output_paths = []
+            for path in files:
+                interactive = interactive_pending
+                result = self.process_file(
+                    path,
+                    channel_number,
+                    config.pixel_count,
+                    interactive,
+                    output_directory,
+                )
+                if interactive_pending:
+                    interactive_pending = False
+                if result:
+                    successes += 1
+                    output_paths.append(result)
 
-        video_path = None
-        if config.video.enabled and output_paths:
-            try:
-                video_path = self._render_video(output_paths, config)
-                self.logger.info('Video written to %s', video_path)
-            except Exception as exc:
-                self.logger.error('Failed to create video: %s', exc)
-                self.logger.debug('Video rendering error details', exc_info=True)
+            self.logger.info('Channel %d complete: %d/%d files succeeded',
+                             channel_number, successes, len(files))
+            per_channel[channel_number] = {
+                'processed': successes,
+                'total': len(files),
+                'output_paths': output_paths,
+            }
+            overall_processed += successes
+
+            if config.video.enabled and output_paths:
+                try:
+                    video_path = self._render_video(output_paths, config, channel_number)
+                    video_paths[channel_number] = video_path
+                    self.logger.info('Channel %d video written to %s',
+                                     channel_number, video_path)
+                except Exception as exc:
+                    self.logger.error('Failed to create video for channel %d: %s',
+                                      channel_number, exc)
+                    self.logger.debug('Video rendering error details', exc_info=True)
 
         return {
-            'processed': successes,
-            'total': len(files),
-            'output_paths': output_paths,
+            'processed': overall_processed,
+            'total': overall_total,
+            'per_channel': per_channel,
             'output_directory': output_directory,
-            'video_path': video_path,
+            'video_paths': video_paths,
         }
 
     def process_file(self, file_path, channel_number, pixel_count, interactive,
@@ -167,6 +194,7 @@ class GwyddionBatchProcessor(object):
             file_path,
             pixel_count,
             xreal * 1e9,
+            channel_number,
             output_directory=output_directory,
         )
         self._save_container(container, output_path, interactive)
@@ -215,8 +243,8 @@ class GwyddionBatchProcessor(object):
         nm_per_pixel_y = (yreal * 1e9) / float(yres)
         self.logger.info('Original nm/pixel: %.3f x %.3f', nm_per_pixel_x, nm_per_pixel_y)
 
-    def _render_video(self, image_paths, config):
-        video_path = config.get_video_output_path()
+    def _render_video(self, image_paths, config, channel_number):
+        video_path = config.get_video_output_path(channel_number)
         if not video_path:
             return None
         settings = config.video
