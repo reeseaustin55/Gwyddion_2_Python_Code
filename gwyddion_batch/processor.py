@@ -98,6 +98,8 @@ class GwyddionBatchProcessor(object):
         video_paths = {}
         interactive_pending = True
 
+        processing_options = getattr(config, 'processing', None)
+
         for channel_number in config.channel_numbers:
             self.logger.info('Processing channel %d', channel_number)
             successes = 0
@@ -111,6 +113,7 @@ class GwyddionBatchProcessor(object):
                     config.pixel_count,
                     interactive,
                     output_directory,
+                    options=processing_options,
                 )
                 if interactive_pending:
                     interactive_pending = False
@@ -153,7 +156,7 @@ class GwyddionBatchProcessor(object):
         }
 
     def process_file(self, file_path, channel_number, pixel_count, interactive,
-                     output_directory=None):
+                     output_directory=None, options=None):
         """Process a single file and return the output image path."""
         self.logger.info('Processing %s', file_path)
         try:
@@ -165,6 +168,7 @@ class GwyddionBatchProcessor(object):
                     pixel_count,
                     interactive,
                     output_directory,
+                    options,
                 )
         except Exception as exc:
             self.logger.error('Error processing %s: %s', file_path, exc)
@@ -174,7 +178,7 @@ class GwyddionBatchProcessor(object):
     # --- Internal helpers -------------------------------------------------
 
     def _process_container(self, container, file_path, channel_number, pixel_count,
-                           interactive, output_directory):
+                           interactive, output_directory, options):
         gwy = self.gwy
 
         data_ids = gwy.gwy_app_data_browser_get_data_ids(container)
@@ -189,7 +193,8 @@ class GwyddionBatchProcessor(object):
         gwy.gwy_app_data_browser_select_data_field(container, data_ids[channel_number])
 
         settings = gwy.gwy_app_settings_get()
-        options = getattr(config, 'processing', None) or ProcessingOptions()
+        if options is None:
+            options = ProcessingOptions()
         self._apply_pre_scaling_steps(container, settings, options)
 
         data_field = gwy.gwy_app_data_browser_get_current(gwy.APP_DATA_FIELD)
