@@ -62,8 +62,17 @@ result = processor.process_folder(config)
 print('Processed images saved to', result['output_directory'])
 for channel, details in sorted(result.get('per_channel', {}).items()):
     print('Channel %d -> %d/%d images' % (channel, details['processed'], details['total']))
-for channel, video_path in sorted(result.get('video_paths', {}).items()):
-    print('Channel %d video created at %s' % (channel, video_path))
+for channel, videos in sorted(result.get('video_paths', {}).items()):
+    if isinstance(videos, dict):
+        for kind, outputs in sorted(videos.items()):
+            if isinstance(outputs, dict):
+                for direction, path in sorted(outputs.items()):
+                    print('Channel %d %s %s video -> %s'
+                          % (channel, kind, direction, path))
+            else:
+                print('Channel %d %s video -> %s' % (channel, kind, outputs))
+    else:
+        print('Channel %d video created at %s' % (channel, videos))
 ```
 
 ### Command line interface
@@ -75,8 +84,9 @@ python -m gwyddion_batch.cli D:\Data\MyExperiment --pixels 1024 --channel 0 --ch
 Use `--help` for the full list of options.  Additional flags let you choose the
 output directory, enable automatic video rendering (requires `ffmpeg`), set the
 target video duration (which controls the playback speed multiplier embedded in
-the filename), choose a constant frame rate via `--video-fps`, and turn on frame
-stabilization with cropping to the shared overlap of all frames.  The `--filter`
+the filename), choose a constant frame rate via `--video-fps`, render alternating
+UP/DOWN scan videos with `--split-scans`, and turn on frame stabilization with
+cropping to the shared overlap of all frames.  The `--filter`
 flag defaults to `.ibw` so the raw Bruker files are processed without picking up
 unrelated data.  Image-processing steps can now be toggled from the CLI as well:
 `--no-flatten`, `--no-align-rows`, `--align-method`, `--align-degree`,
@@ -86,16 +96,22 @@ checkboxes so scripted runs match interactive sessions.
 ### Video stitching
 
 Processed images are written to a timestamped subfolder inside the selected data
-directory (for example ``output_20250318_143512``).  Each processed PNG
-filename still includes the channel number so multiple channels can be exported
-from the same source file without collisions.  When video rendering is enabled
-the tool will invoke `ffmpeg` using a concat file similar to the batch scripts
-provided previously.  The time span between the first and last source ``.ibw``
-file is divided by the requested video duration to compute a playback speed
-multiplier such as ``4X``; that multiplier is appended to the video filename.  Per
-frame durations are scaled automatically and then converted into repeated frames
-at a fixed frame rate (30 fps by default) so playback is smooth while still
-respecting the requested total duration.
+directory (for example ``output_20250318_143512``).  Each channel now receives
+its own nested directory (``channel0``, ``channel1`` and so on) and, when ACF
+generation is enabled, the autocorrelation images for that channel are grouped
+under an ``acf`` subfolder.  Filenames still include the channel number so
+multiple channels can be exported from the same source file without collisions.
+
+When video rendering is enabled the tool invokes `ffmpeg` using a concat file
+similar to the batch scripts provided previously.  The time span between the
+first and last source ``.ibw`` file is divided by the requested video duration to
+compute a playback speed multiplier such as ``4X``; that multiplier is appended
+to each rendered video filename.  Frame durations are scaled automatically and
+fed through ffmpeg's `fps` filter so output videos play back at a constant rate
+(30 fps by default) while still honouring the requested total duration.  Enabling
+`--split-scans` (or the corresponding GUI checkbox) additionally produces UP and
+DOWN scan videos generated from alternating frames for both the processed data
+and any ACF imagery.
 
 Enable the new stabilization option to perform a two-pass `ffmpeg` run using
 ``vidstab`` filters.  The detection pass measures per-frame drift, the
@@ -104,12 +120,13 @@ shared image area to avoid edge artifacts.  CLI flags (``--stabilize``,
 ``--stabilize-shakiness`` and friends) map directly to the constants exposed in
 `run_batch.py` and `render_video.py`.
 
-When statistics export is enabled the processor writes a companion
-`*_stats.txt` file next to each PNG summarising min, max, mean, RMS, skewness,
-and kurtosis values along with the pixel and scan dimensions in nanometres.  ACF
-generation adds an additional `*_acf.png` rendered from the processed data so
-each selected channel produces both the cleaned height image and its
-autocorrelation counterpart.
+When statistics export is enabled the processor calls Gwyddion's own statistical
+quantities module and writes the complete set of reported values (Sa, Sq, hybrid
+metrics, scan-line discrepancy, and more) to a companion `*_stats.txt` file in
+the channel directory.  ACF generation adds an additional `*_acf.png` rendered
+from the processed data so each selected channel produces both the cleaned
+height image and its autocorrelation counterpart, organised beneath the channel
+folder.
 
 ### Example scripts
 

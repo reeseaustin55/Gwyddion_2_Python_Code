@@ -30,6 +30,8 @@ VIDEO_ENABLED = False
 FFMPEG_PATH = r"C:\\Program Files\\ffmpeg-2025-02-24-git-6232f416b1-full_build\\bin\\ffmpeg.exe"  # Or just 'ffmpeg' if on PATH
 VIDEO_DURATION = 10.0  # seconds
 VIDEO_FRAME_RATE = 30.0  # frames per second
+# When enabled, render separate UP/DOWN videos using alternating frames
+VIDEO_SPLIT_SCANS = False
 # Pixel format is fixed to yuv420p by default in the helper
 # Additional ffmpeg arguments can be provided via the API if needed
 # Stabilization settings ----------------------------------------------------
@@ -73,6 +75,7 @@ def main():
         duration_seconds=VIDEO_DURATION,
         stabilization=stabilization_settings,
         frame_rate=VIDEO_FRAME_RATE if VIDEO_ENABLED else None,
+        split_scans=VIDEO_SPLIT_SCANS,
     )
 
     processing_options = ProcessingOptions(
@@ -108,8 +111,17 @@ def main():
     for channel, details in sorted(result.get('per_channel', {}).items()):
         logging.info('Channel %d: %d/%d images saved',
                      channel, details.get('processed', 0), details.get('total', 0))
-    for channel, video_path in sorted(result.get('video_paths', {}).items()):
-        logging.info('Channel %d video written to %s', channel, video_path)
+    for channel, videos in sorted(result.get('video_paths', {}).items()):
+        if isinstance(videos, dict):
+            for kind, entries in sorted(videos.items()):
+                if isinstance(entries, dict):
+                    for direction, path in sorted(entries.items()):
+                        logging.info('Channel %d %s %s video: %s',
+                                     channel, kind, direction, path)
+                else:
+                    logging.info('Channel %d %s video: %s', channel, kind, entries)
+        else:
+            logging.info('Channel %d video written to %s', channel, videos)
 
 
 if __name__ == '__main__':

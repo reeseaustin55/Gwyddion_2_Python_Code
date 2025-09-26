@@ -53,7 +53,8 @@ class VideoSettings(object):
 
     def __init__(self, enabled=False, output_path=None, ffmpeg_path='ffmpeg',
                  duration_seconds=None, pixel_format='yuv420p',
-                 extra_args=None, stabilization=None, frame_rate=30.0):
+                 extra_args=None, stabilization=None, frame_rate=30.0,
+                 split_scans=False):
         self.enabled = bool(enabled)
         self.output_path = output_path
         self.ffmpeg_path = ffmpeg_path or 'ffmpeg'
@@ -69,6 +70,7 @@ class VideoSettings(object):
         if rate_value is not None and rate_value <= 0:
             rate_value = None
         self.frame_rate = rate_value
+        self.split_scans = bool(split_scans)
 
 
 def format_time_multiplier(multiplier):
@@ -231,7 +233,24 @@ class BatchConfig(object):
             os.makedirs(self.output_directory)
         return self.output_directory
 
-    def get_video_output_path(self, channel_number=None, time_multiplier=None):
+    def ensure_channel_directory(self, channel_number):
+        """Return the per-channel output directory, creating it if needed."""
+        name = 'channel%d' % int(channel_number)
+        path = _join_child_path(self.output_directory, name, self._path_style)
+        if not os.path.isdir(path):
+            os.makedirs(path)
+        return path
+
+    def ensure_acf_directory(self, channel_number):
+        """Return the directory for ACF images for ``channel_number``."""
+        base = self.ensure_channel_directory(channel_number)
+        path = _join_child_path(base, 'acf', self._path_style)
+        if not os.path.isdir(path):
+            os.makedirs(path)
+        return path
+
+    def get_video_output_path(self, channel_number=None, time_multiplier=None,
+                              data_kind='base', scan_direction='full'):
         """Return the absolute path for the rendered video file."""
         if not self.video.enabled:
             return None
@@ -240,19 +259,29 @@ class BatchConfig(object):
                 channel_number = self.channel_numbers[0]
             else:
                 raise ValueError('channel_number is required when multiple channels are configured')
+        direction = scan_direction or 'full'
+        data_kind = data_kind or 'base'
+        suffix_parts = []
+        if data_kind and data_kind != 'base':
+            suffix_parts.append(data_kind)
+        if direction and direction != 'full':
+            suffix_parts.append(direction)
+        if time_multiplier is not None:
+            suffix_parts.append(format_time_multiplier(time_multiplier))
+        suffix = ''
+        if suffix_parts:
+            suffix = '_' + '_'.join(suffix_parts)
         if self.video.output_path:
             base_path = os.path.abspath(self.video.output_path)
             base, ext = os.path.splitext(base_path)
             if not ext:
                 ext = '.mp4'
-            if time_multiplier is not None:
-                base = '%s_%s' % (base, format_time_multiplier(time_multiplier))
+            if suffix:
+                base = base + suffix
             return base + ext
+        channel_dir = self.ensure_channel_directory(channel_number)
         base_name = os.path.basename(os.path.normpath(self.folder_path))
         if not base_name:
             base_name = 'output'
-        multiplier_part = ''
-        if time_multiplier is not None:
-            multiplier_part = '_%s' % format_time_multiplier(time_multiplier)
-        file_name = '%s_channel%d%s.mp4' % (base_name, channel_number, multiplier_part)
-        return os.path.join(self.output_directory, file_name)
+        file_name = '%s_channel%d%s.mp4' % (base_name, channel_number, suffix)
+        return os.path.join(channel_dir, file_name)

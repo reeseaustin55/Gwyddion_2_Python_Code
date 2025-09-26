@@ -48,6 +48,10 @@ def build_arg_parser():
                         help='Enable drift correction and cropping when rendering the video.')
     parser.add_argument('--no-stabilize', dest='stabilize', action='store_false',
                         help='Disable video stabilization (default).')
+    parser.add_argument('--split-scans', dest='split_scans', action='store_true', default=False,
+                        help='Render separate videos for alternating frames (UP/DOWN scans).')
+    parser.add_argument('--no-split-scans', dest='split_scans', action='store_false',
+                        help='Render a single video per channel (default).')
     parser.add_argument('--no-crop-shared', dest='stabilize_crop', action='store_false', default=True,
                         help='Skip cropping the stabilized video to the shared frame area.')
     parser.add_argument('--crop-shared', dest='stabilize_crop', action='store_true',
@@ -128,6 +132,7 @@ def main(argv=None):
             pixel_format=args.pixel_format,
             stabilization=stabilization_settings,
             frame_rate=video_frame_rate,
+            split_scans=args.split_scans,
         )
         channel_numbers = args.channels or [0]
         processing_options = ProcessingOptions(

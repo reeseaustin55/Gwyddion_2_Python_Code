@@ -104,7 +104,13 @@ class GwyddionBatchProcessor(object):
             self.logger.info('Processing channel %d', channel_number)
             successes = 0
             output_paths = []
+            acf_paths = []
             capture_times = []
+            channel_output_directory = config.ensure_channel_directory(channel_number)
+            if processing_options and getattr(processing_options, 'generate_acf', False):
+                acf_directory = config.ensure_acf_directory(channel_number)
+            else:
+                acf_directory = None
             for path in files:
                 interactive = interactive_pending
                 result = self.process_file(
@@ -112,14 +118,20 @@ class GwyddionBatchProcessor(object):
                     channel_number,
                     config.pixel_count,
                     interactive,
-                    output_directory,
+                    channel_output_directory,
                     options=processing_options,
+                    acf_directory=acf_directory,
                 )
                 if interactive_pending:
                     interactive_pending = False
                 if result:
                     successes += 1
-                    output_paths.append(result)
+                    image_path = result.get('image_path')
+                    if image_path:
+                        output_paths.append(image_path)
+                    acf_path = result.get('acf_path')
+                    if acf_path:
+                        acf_paths.append(acf_path)
                     capture_times.append(file_times.get(path))
 
             self.logger.info('Channel %d complete: %d/%d files succeeded',
@@ -128,20 +140,21 @@ class GwyddionBatchProcessor(object):
                 'processed': successes,
                 'total': len(files),
                 'output_paths': output_paths,
+                'acf_paths': acf_paths,
             }
             overall_processed += successes
 
             if config.video.enabled and output_paths:
                 try:
-                    video_path = self._render_video(
+                    rendered = self._render_channel_videos(
+                        channel_number,
                         output_paths,
+                        acf_paths,
                         capture_times,
                         config,
-                        channel_number,
                     )
-                    video_paths[channel_number] = video_path
-                    self.logger.info('Channel %d video written to %s',
-                                     channel_number, video_path)
+                    if rendered:
+                        video_paths[channel_number] = rendered
                 except Exception as exc:
                     self.logger.error('Failed to create video for channel %d: %s',
                                       channel_number, exc)
@@ -156,8 +169,8 @@ class GwyddionBatchProcessor(object):
         }
 
     def process_file(self, file_path, channel_number, pixel_count, interactive,
-                     output_directory=None, options=None):
-        """Process a single file and return the output image path."""
+                     output_directory=None, options=None, acf_directory=None):
+        """Process a single file and return generated artifact paths."""
         self.logger.info('Processing %s', file_path)
         try:
             with self._open_container(file_path) as container:
@@ -169,6 +182,7 @@ class GwyddionBatchProcessor(object):
                     interactive,
                     output_directory,
                     options,
+                    acf_directory,
                 )
         except Exception as exc:
             self.logger.error('Error processing %s: %s', file_path, exc)
@@ -178,7 +192,7 @@ class GwyddionBatchProcessor(object):
     # --- Internal helpers -------------------------------------------------
 
     def _process_container(self, container, file_path, channel_number, pixel_count,
-                           interactive, output_directory, options):
+                           interactive, output_directory, options, acf_directory):
         gwy = self.gwy
 
         data_ids = gwy.gwy_app_data_browser_get_data_ids(container)
@@ -227,11 +241,24 @@ class GwyddionBatchProcessor(object):
         )
         self._save_container(container, output_path, interactive)
 
+        stats_path = None
         if options.export_stats:
-            self._write_statistics(processed_field, output_path)
+            stats_path = self._write_statistics(container, processed_field,
+                                                scaled_channel, output_path)
+        acf_path = None
         if options.generate_acf:
-            self._generate_acf_image(container, settings, output_path, scaled_channel)
-        return output_path
+            acf_path = self._generate_acf_image(
+                container,
+                settings,
+                output_path,
+                scaled_channel,
+                acf_directory,
+            )
+        return {
+            'image_path': output_path,
+            'acf_path': acf_path,
+            'stats_path': stats_path,
+        }
 
     def _apply_pre_scaling_steps(self, container, settings, options):
         gwy = self.gwy
@@ -315,8 +342,8 @@ class GwyddionBatchProcessor(object):
                 return True
         return False
 
-    def _write_statistics(self, data_field, output_path):
-        stats = self._collect_statistics(data_field)
+    def _write_statistics(self, container, data_field, channel_id, output_path):
+        stats = self._collect_statistics(container, data_field, channel_id)
         if not stats:
             return None
         base, _ = os.path.splitext(output_path)
@@ -335,9 +362,66 @@ class GwyddionBatchProcessor(object):
             self.logger.debug('Statistics error details', exc_info=True)
             return None
 
-    def _collect_statistics(self, data_field):
+    def _collect_statistics(self, container, data_field, channel_id):
         if data_field is None:
             return {}
+        stats = self._collect_gwyddion_stats(data_field)
+        if stats:
+            return stats
+        stats = self._collect_container_stats(container, channel_id)
+        if stats:
+            return stats
+        return self._collect_basic_statistics(data_field)
+
+    def _collect_gwyddion_stats(self, data_field):
+        getters = ['get_statistics', 'statistics_get', 'get_stats']
+        for name in getters:
+            getter = getattr(data_field, name, None)
+            if getter is None:
+                continue
+            try:
+                stats_obj = getter()
+            except TypeError:
+                try:
+                    stats_obj = getter(None)
+                except Exception:
+                    continue
+            except Exception:
+                continue
+            converted = self._normalize_stats_object(stats_obj)
+            if converted:
+                return converted
+        return {}
+
+    def _collect_container_stats(self, container, channel_id):
+        gwy = self.gwy
+        try:
+            gwy.gwy_process_func_run('stats', container, gwy.RUN_IMMEDIATE)
+        except Exception:
+            pass
+        getter = getattr(gwy, 'gwy_container_get_object_by_name', None)
+        if getter is None:
+            return {}
+        key_templates = [
+            '/%d/stats',
+            '/%d/statistics',
+            '/%d/data/stats',
+            '/%d/data/statistics',
+        ]
+        for template in key_templates:
+            key = template % int(channel_id)
+            try:
+                obj = getter(container, key)
+            except Exception:
+                continue
+            if not obj:
+                continue
+            converted = self._normalize_stats_object(obj)
+            if converted:
+                return converted
+        return {}
+
+    def _collect_basic_statistics(self, data_field):
         stats = {}
         attribute_map = [
             ('get_min', 'min'),
@@ -369,7 +453,68 @@ class GwyddionBatchProcessor(object):
             pass
         return stats
 
-    def _generate_acf_image(self, container, settings, output_path, scaled_channel_id):
+    def _normalize_stats_object(self, stats_obj):
+        if not stats_obj:
+            return {}
+        if isinstance(stats_obj, dict):
+            return self._stringify_stats(stats_obj)
+        to_dict = getattr(stats_obj, 'to_dict', None)
+        if to_dict:
+            try:
+                data = to_dict()
+                if isinstance(data, dict):
+                    return self._stringify_stats(data)
+            except Exception:
+                pass
+        items = getattr(stats_obj, 'items', None)
+        if items:
+            try:
+                return self._stringify_stats(dict(items()))
+            except Exception:
+                pass
+        result = {}
+        for name in dir(stats_obj):
+            if name.startswith('_'):
+                continue
+            try:
+                value = getattr(stats_obj, name)
+            except Exception:
+                continue
+            if callable(value) or value is None:
+                continue
+            try:
+                text_name = str(name)
+            except Exception:
+                text_name = name
+            if isinstance(value, (int, float)):
+                result[text_name] = '%.6g' % float(value)
+            else:
+                try:
+                    result[text_name] = str(value)
+                except Exception:
+                    continue
+        return result
+
+    def _stringify_stats(self, mapping):
+        result = {}
+        for key, value in mapping.items():
+            if value is None:
+                continue
+            try:
+                text_key = str(key)
+            except Exception:
+                text_key = key
+            if isinstance(value, (int, float)):
+                result[text_key] = '%.6g' % float(value)
+            else:
+                try:
+                    result[text_key] = str(value)
+                except Exception:
+                    continue
+        return result
+
+    def _generate_acf_image(self, container, settings, output_path, scaled_channel_id,
+                            acf_directory):
         gwy = self.gwy
         try:
             settings.set_boolean_by_name('/module/acf2d/create_image', True)
@@ -385,8 +530,15 @@ class GwyddionBatchProcessor(object):
                 return None
             acf_channel = data_ids[-1]
             gwy.gwy_app_data_browser_select_data_field(container, acf_channel)
-            base, _ = os.path.splitext(output_path)
-            acf_path = base + '_acf.png'
+            base, file_name = os.path.split(output_path)
+            name, ext = os.path.splitext(file_name)
+            if acf_directory:
+                directory = acf_directory
+            else:
+                directory = os.path.join(base, 'acf')
+            if not os.path.isdir(directory):
+                os.makedirs(directory)
+            acf_path = os.path.join(directory, name + '_acf.png')
             self._save_container(container, acf_path, interactive=False)
             self.logger.info('ACF saved to %s', acf_path)
             try:
@@ -398,6 +550,115 @@ class GwyddionBatchProcessor(object):
             self.logger.error('Failed to generate ACF for %s: %s', output_path, exc)
             self.logger.debug('ACF generation error details', exc_info=True)
             return None
+
+    def _render_channel_videos(self, channel_number, output_paths, acf_paths,
+                               capture_times, config):
+        rendered = {}
+        base_videos = {}
+        base_video = self._render_video(
+            output_paths,
+            capture_times,
+            config,
+            channel_number,
+            data_kind='base',
+            scan_direction='full',
+        )
+        if base_video:
+            base_videos['full'] = base_video
+            self.logger.info('Channel %d video written to %s', channel_number, base_video)
+        if config.video.split_scans and len(output_paths) > 1:
+            up_paths, up_times, down_paths, down_times = self._split_scans(output_paths, capture_times)
+            if up_paths:
+                up_video = self._render_video(
+                    up_paths,
+                    up_times,
+                    config,
+                    channel_number,
+                    data_kind='base',
+                    scan_direction='up',
+                )
+                if up_video:
+                    base_videos['up'] = up_video
+                    self.logger.info('Channel %d up-scan video written to %s',
+                                     channel_number, up_video)
+            if down_paths:
+                down_video = self._render_video(
+                    down_paths,
+                    down_times,
+                    config,
+                    channel_number,
+                    data_kind='base',
+                    scan_direction='down',
+                )
+                if down_video:
+                    base_videos['down'] = down_video
+                    self.logger.info('Channel %d down-scan video written to %s',
+                                     channel_number, down_video)
+        if base_videos:
+            rendered['base'] = base_videos
+
+        if acf_paths:
+            acf_videos = {}
+            acf_video = self._render_video(
+                acf_paths,
+                capture_times,
+                config,
+                channel_number,
+                data_kind='acf',
+                scan_direction='full',
+            )
+            if acf_video:
+                acf_videos['full'] = acf_video
+                self.logger.info('Channel %d ACF video written to %s',
+                                 channel_number, acf_video)
+            if config.video.split_scans and len(acf_paths) > 1:
+                up_paths, up_times, down_paths, down_times = self._split_scans(acf_paths, capture_times)
+                if up_paths:
+                    up_video = self._render_video(
+                        up_paths,
+                        up_times,
+                        config,
+                        channel_number,
+                        data_kind='acf',
+                        scan_direction='up',
+                    )
+                    if up_video:
+                        acf_videos['up'] = up_video
+                        self.logger.info('Channel %d ACF up-scan video written to %s',
+                                         channel_number, up_video)
+                if down_paths:
+                    down_video = self._render_video(
+                        down_paths,
+                        down_times,
+                        config,
+                        channel_number,
+                        data_kind='acf',
+                        scan_direction='down',
+                    )
+                    if down_video:
+                        acf_videos['down'] = down_video
+                        self.logger.info('Channel %d ACF down-scan video written to %s',
+                                         channel_number, down_video)
+            if acf_videos:
+                rendered['acf'] = acf_videos
+        return rendered
+
+    def _split_scans(self, paths, capture_times):
+        up_paths = []
+        down_paths = []
+        up_times = []
+        down_times = []
+        for index, path in enumerate(paths):
+            timestamp = None
+            if capture_times and index < len(capture_times):
+                timestamp = capture_times[index]
+            if index % 2 == 0:
+                up_paths.append(path)
+                up_times.append(timestamp)
+            else:
+                down_paths.append(path)
+                down_times.append(timestamp)
+        return up_paths, up_times, down_paths, down_times
 
     def _save_container(self, container, output_path, interactive):
         gwy = self.gwy
@@ -415,7 +676,8 @@ class GwyddionBatchProcessor(object):
         nm_per_pixel_y = (yreal * 1e9) / float(yres)
         self.logger.info('Original nm/pixel: %.3f x %.3f', nm_per_pixel_x, nm_per_pixel_y)
 
-    def _render_video(self, image_paths, capture_times, config, channel_number):
+    def _render_video(self, image_paths, capture_times, config, channel_number,
+                      data_kind='base', scan_direction='full'):
         settings = config.video
 
         frame_count = len(image_paths)
@@ -440,19 +702,27 @@ class GwyddionBatchProcessor(object):
             time_multiplier,
         )
 
-        video_path = config.get_video_output_path(channel_number, time_multiplier)
+        video_path = config.get_video_output_path(
+            channel_number,
+            time_multiplier,
+            data_kind=data_kind,
+            scan_direction=scan_direction,
+        )
         if not video_path:
             return None
 
         label = format_time_multiplier(time_multiplier) if time_multiplier else '1X'
-        self.logger.info('Channel %d capture span: %.2f s; multiplier %s',
-                         channel_number, actual_duration, label)
+        self.logger.info('Channel %d %s %s capture span: %.2f s; multiplier %s',
+                         channel_number, data_kind, scan_direction,
+                         actual_duration, label)
 
         stitch_images_to_video(
             image_paths,
             video_path,
             ffmpeg_path=settings.ffmpeg_path,
             frame_durations=frame_durations,
+            frame_duration=(target_duration / float(frame_count)
+                            if frame_count else None),
             frame_rate=settings.frame_rate,
             pixel_format=settings.pixel_format,
             extra_args=settings.extra_args,

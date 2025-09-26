@@ -84,6 +84,7 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
                 'enabled': bool(self.video_enabled_var.get()),
                 'duration': self.video_duration_var.get(),
                 'frame_rate': self.video_frame_rate_var.get(),
+                'split_scans': bool(self.video_split_var.get()),
                 'stabilization': {
                     'enabled': bool(self.stabilize_var.get()),
                     'shakiness': self.shakiness_var.get(),
@@ -130,6 +131,7 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
         self.video_enabled_var = tk.IntVar(value=1 if video_defaults.get('enabled') else 0)
         self.video_duration_var = tk.StringVar(value=str(video_defaults.get('duration', '10')))
         self.video_frame_rate_var = tk.StringVar(value=str(video_defaults.get('frame_rate', '30')))
+        self.video_split_var = tk.IntVar(value=1 if video_defaults.get('split_scans') else 0)
 
         stabilization_defaults = video_defaults.get('stabilization', {})
         self.stabilize_var = tk.IntVar(value=1 if stabilization_defaults.get('enabled') else 0)
@@ -174,6 +176,7 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
         self._video_entries = []
         self._stabilization_entries = []
         self._stabilization_checkbuttons = []
+        self._video_checkbuttons = []
         self._align_method_buttons = []
         self._align_degree_entry = None
 
@@ -260,6 +263,14 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
             2,
             entry_list=self._video_entries,
         )
+
+        split_cb = tk.Checkbutton(
+            video_frame,
+            text='Split UP/DOWN scans',
+            variable=self.video_split_var,
+        )
+        split_cb.grid(row=3, column=0, columnspan=3, sticky='w')
+        self._video_checkbuttons.append(split_cb)
 
         row += 1
         stab_frame = tk.LabelFrame(main, text='Video stabilization')
@@ -361,6 +372,8 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
         state = tk.NORMAL if self.video_enabled_var.get() else tk.DISABLED
         for entry in self._video_entries:
             entry.configure(state=state)
+        for checkbox in getattr(self, '_video_checkbuttons', []):
+            checkbox.configure(state=state)
         if self.video_enabled_var.get():
             self._stabilize_checkbox.configure(state=tk.NORMAL)
         else:
@@ -446,6 +459,7 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
             raise ValueError('Video frame rate must be greater than zero when video stitching is enabled.')
         if not video_enabled:
             frame_rate = None
+        split_scans = bool(self.video_split_var.get()) if video_enabled else False
 
         stabilization_enabled = video_enabled and bool(self.stabilize_var.get())
         stabilization = StabilizationSettings(
@@ -469,6 +483,7 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
             duration_seconds=video_duration,
             stabilization=stabilization,
             frame_rate=frame_rate,
+            split_scans=split_scans,
         )
 
         try:
@@ -529,8 +544,19 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
                     channel,
                     details.get('processed', 0),
                     details.get('total', 0)))
-            for channel, video_path in sorted(result.get('video_paths', {}).items()):
-                self.log_queue.put('Channel %d video written to %s' % (channel, video_path))
+            for channel, videos in sorted(result.get('video_paths', {}).items()):
+                if isinstance(videos, dict):
+                    for kind, entries in sorted(videos.items()):
+                        if isinstance(entries, dict):
+                            for direction, path in sorted(entries.items()):
+                                self.log_queue.put('Channel %d %s %s video written to %s'
+                                                   % (channel, kind, direction, path))
+                        else:
+                            self.log_queue.put('Channel %d %s video written to %s'
+                                               % (channel, kind, entries))
+                else:
+                    self.log_queue.put('Channel %d video written to %s'
+                                       % (channel, videos))
         except Exception as exc:  # pragma: no cover - user feedback
             error_message = 'ERROR: %s' % exc
             self.log_queue.put(error_message)

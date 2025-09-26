@@ -369,6 +369,8 @@ def main(argv=None):
             video_settings.output_path,
             ffmpeg_path=video_settings.ffmpeg_path,
             frame_durations=frame_durations,
+            frame_duration=(video_duration / float(len(images))
+                            if video_duration and len(images) else None),
             frame_rate=video_settings.frame_rate,
             pixel_format=video_settings.pixel_format,
             extra_args=video_settings.extra_args,
