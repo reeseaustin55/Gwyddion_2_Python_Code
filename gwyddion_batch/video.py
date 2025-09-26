@@ -50,6 +50,54 @@ def _contains_filter(extra_args):
     return False
 
 
+def _calculate_repeat_counts(durations, frame_count, default_duration, frame_rate):
+    """Return repeat counts per frame to approximate ``durations`` at ``frame_rate``."""
+    if frame_count <= 0:
+        return []
+
+    if default_duration is None or default_duration <= 0:
+        default_duration = 1.0 / float(frame_rate)
+
+    normalized = []
+    for index in range(frame_count):
+        value = default_duration
+        if index < len(durations):
+            candidate = durations[index]
+            try:
+                candidate = float(candidate)
+            except Exception:
+                candidate = None
+            if candidate and candidate > 0:
+                value = candidate
+        normalized.append(value)
+
+    total_duration = sum(normalized)
+    if total_duration <= 0:
+        total_duration = default_duration * frame_count
+
+    target_total_frames = int(round(total_duration * float(frame_rate)))
+    if target_total_frames < frame_count:
+        target_total_frames = frame_count
+
+    repeats = []
+    produced = 0
+    accumulator = 0.0
+    for value in normalized:
+        accumulator += value * float(frame_rate)
+        count = int(round(accumulator)) - produced
+        if count <= 0:
+            count = 1
+        repeats.append(count)
+        produced += count
+
+    if repeats:
+        diff = target_total_frames - produced
+        if diff != 0:
+            repeats[-1] = max(1, repeats[-1] + diff)
+
+    return repeats
+
+
 def _probe_png_size(path):
     """Return ``(width, height)`` for a PNG ``path``."""
     handle = open(path, 'rb')
@@ -210,42 +258,58 @@ def stitch_images_to_video(image_paths, output_path, ffmpeg_path='ffmpeg',
         if sanitized_rate is not None and sanitized_rate <= 0:
             sanitized_rate = None
 
+        durations = list(frame_durations or [])
+        default_duration = None
+        if frame_duration is not None:
+            try:
+                default_duration = float(frame_duration)
+            except Exception:
+                default_duration = None
+        using_repeats = sanitized_rate is not None
+        repeat_counts = None
+        if using_repeats:
+            repeat_counts = _calculate_repeat_counts(
+                durations,
+                len(image_paths),
+                default_duration,
+                float(sanitized_rate),
+            )
         with io.open(list_path, 'w', encoding='utf-8') as handle:
-            durations = list(frame_durations or [])
-            default_duration = None
-            if frame_duration is not None:
-                try:
-                    default_duration = float(frame_duration)
-                except Exception:
-                    default_duration = None
-            if default_duration is None and sanitized_rate:
-                default_duration = 1.0 / float(sanitized_rate)
-            wrote_duration = False
-            last_escaped = None
-            for index, path in enumerate(image_paths):
-                text_path = _ensure_text(path)
-                escaped = _escape_path(text_path)
-                handle.write(u"file '%s'\n" % escaped)
-                last_escaped = escaped
-                duration_value = None
-                if index < len(durations):
-                    duration_value = durations[index]
-                elif default_duration is not None:
-                    duration_value = default_duration
-                if duration_value is None and sanitized_rate:
-                    duration_value = 1.0 / float(sanitized_rate)
-                if duration_value is None:
-                    continue
-                try:
-                    duration_float = float(duration_value)
-                except Exception:
-                    duration_float = 0.0
-                if duration_float <= 0:
-                    duration_float = 1e-3
-                handle.write(u'duration %.9f\n' % duration_float)
-                wrote_duration = True
-            if wrote_duration and last_escaped is not None:
-                handle.write(u"file '%s'\n" % last_escaped)
+            if using_repeats and repeat_counts:
+                for path, count in zip(image_paths, repeat_counts):
+                    text_path = _ensure_text(path)
+                    escaped = _escape_path(text_path)
+                    for _ in range(count):
+                        handle.write(u"file '%s'\n" % escaped)
+            else:
+                if default_duration is None and sanitized_rate:
+                    default_duration = 1.0 / float(sanitized_rate)
+                wrote_duration = False
+                last_escaped = None
+                for index, path in enumerate(image_paths):
+                    text_path = _ensure_text(path)
+                    escaped = _escape_path(text_path)
+                    handle.write(u"file '%s'\n" % escaped)
+                    last_escaped = escaped
+                    duration_value = None
+                    if index < len(durations):
+                        duration_value = durations[index]
+                    elif default_duration is not None:
+                        duration_value = default_duration
+                    if duration_value is None and sanitized_rate:
+                        duration_value = 1.0 / float(sanitized_rate)
+                    if duration_value is None:
+                        continue
+                    try:
+                        duration_float = float(duration_value)
+                    except Exception:
+                        duration_float = 0.0
+                    if duration_float <= 0:
+                        duration_float = 1e-3
+                    handle.write(u'duration %.9f\n' % duration_float)
+                    wrote_duration = True
+                if wrote_duration and last_escaped is not None:
+                    handle.write(u"file '%s'\n" % last_escaped)
 
         command = [
             to_native_path(ffmpeg_path),
@@ -299,17 +363,13 @@ def stitch_images_to_video(image_paths, output_path, ffmpeg_path='ffmpeg',
         if ensure_even_filter:
             filters.append(ensure_even_filter)
 
-        if sanitized_rate:
-            rate_filter = 'fps=%.6f' % float(sanitized_rate)
-            if filters:
-                filters.append(rate_filter)
-            else:
-                filters.append(rate_filter)
-
         if filters:
             command.extend(['-vf', ','.join(filters)])
 
-        if frame_durations or frame_duration is not None or sanitized_rate:
+        if sanitized_rate:
+            command.extend(['-vsync', 'cfr'])
+            command.extend(['-r', '%.6f' % float(sanitized_rate)])
+        elif frame_durations or frame_duration is not None:
             command.extend(['-vsync', 'vfr'])
         if pixel_format:
             command.extend(['-pix_fmt', pixel_format])
