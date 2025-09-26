@@ -7,7 +7,7 @@ import os
 from contextlib import contextmanager
 
 from .compat import to_native_path
-from .config import format_time_multiplier
+from .config import format_time_multiplier, ProcessingOptions
 from .video import stitch_images_to_video
 
 
@@ -22,20 +22,25 @@ def get_supported_extensions():
     return list(SUPPORTED_EXTENSIONS)
 
 
+def build_output_basename(input_path, pixel_count, width_nm, channel_number=0):
+    """Return the base filename (without extension) for processed outputs."""
+    base_name = os.path.splitext(os.path.basename(input_path))[0]
+    width_nm_int = int(round(width_nm))
+    return '%dpx_%dnm_channel%d_%s' % (
+        int(pixel_count),
+        width_nm_int,
+        int(channel_number),
+        base_name,
+    )
+
+
 def generate_output_path(input_path, pixel_count, width_nm, channel_number=0,
                          output_directory=None):
     """Generate the output PNG file path for ``input_path``."""
     import os
 
     directory = output_directory or os.path.dirname(input_path)
-    base_name = os.path.splitext(os.path.basename(input_path))[0]
-    width_nm_int = int(round(width_nm))
-    file_name = '%dpx_%dnm_channel%d_%s.png' % (
-        pixel_count,
-        width_nm_int,
-        int(channel_number),
-        base_name,
-    )
+    file_name = build_output_basename(input_path, pixel_count, width_nm, channel_number) + '.png'
     return os.path.join(directory, file_name)
 
 
@@ -184,7 +189,8 @@ class GwyddionBatchProcessor(object):
         gwy.gwy_app_data_browser_select_data_field(container, data_ids[channel_number])
 
         settings = gwy.gwy_app_settings_get()
-        self._apply_initial_processing(container, settings)
+        options = getattr(config, 'processing', None) or ProcessingOptions()
+        self._apply_pre_scaling_steps(container, settings, options)
 
         data_field = gwy.gwy_app_data_browser_get_current(gwy.APP_DATA_FIELD)
         xres = data_field.get_xres()
@@ -203,7 +209,9 @@ class GwyddionBatchProcessor(object):
 
         scaled_channel = gwy.gwy_app_data_browser_get_data_ids(container)[-1]
         gwy.gwy_app_data_browser_select_data_field(container, scaled_channel)
-        self._apply_final_alignment(container, settings)
+        self._apply_post_scaling_steps(container, settings, options)
+
+        processed_field = gwy.gwy_app_data_browser_get_current(gwy.APP_DATA_FIELD)
 
         output_path = generate_output_path(
             file_path,
@@ -213,17 +221,26 @@ class GwyddionBatchProcessor(object):
             output_directory=output_directory,
         )
         self._save_container(container, output_path, interactive)
+
+        if options.export_stats:
+            self._write_statistics(processed_field, output_path)
+        if options.generate_acf:
+            self._generate_acf_image(container, settings, output_path, scaled_channel)
         return output_path
 
-    def _apply_initial_processing(self, container, settings):
+    def _apply_pre_scaling_steps(self, container, settings, options):
         gwy = self.gwy
-        self.logger.debug('Applying initial leveling and alignment')
-        gwy.gwy_process_func_run('level', container, gwy.RUN_IMMEDIATE)
-        settings.set_int32_by_name('/module/linematch/method', 2)
-        gwy.gwy_process_func_run('align_rows', container, gwy.RUN_IMMEDIATE)
-        gwy.gwy_process_func_run('align_rows', container, gwy.RUN_IMMEDIATE)
-        gwy.gwy_process_func_run('level', container, gwy.RUN_IMMEDIATE)
-        gwy.gwy_process_func_run('fix_zero', container, gwy.RUN_IMMEDIATE)
+        if options.flatten:
+            self.logger.debug('Applying flattening before scaling')
+            gwy.gwy_process_func_run('level', container, gwy.RUN_IMMEDIATE)
+        if options.align_rows:
+            self._run_align_rows(container, settings, options)
+        if options.remove_scars:
+            self.logger.debug('Removing scars')
+            gwy.gwy_process_func_run('remove_scars', container, gwy.RUN_IMMEDIATE)
+            if options.align_rows:
+                self.logger.debug('Re-aligning rows after scar removal')
+                self._run_align_rows(container, settings, options)
 
     def _apply_scaling(self, container, settings, pixel_count, xres, yres):
         gwy = self.gwy
@@ -235,12 +252,147 @@ class GwyddionBatchProcessor(object):
         settings.set_double_by_name('/module/scale/aspectratio', float(xres) / float(yres))
         gwy.gwy_process_func_run('scale', container, gwy.RUN_IMMEDIATE)
 
-    def _apply_final_alignment(self, container, settings):
+    def _apply_post_scaling_steps(self, container, settings, options):
         gwy = self.gwy
-        self.logger.debug('Applying final alignment')
-        settings.set_int32_by_name('/module/linematch/method', 0)
-        settings.set_int32_by_name('/module/linematch/degree', 2)
+        if options.flatten:
+            self.logger.debug('Flattening scaled data')
+            gwy.gwy_process_func_run('level', container, gwy.RUN_IMMEDIATE)
+        if options.align_rows:
+            self.logger.debug('Aligning rows on scaled data')
+            self._run_align_rows(container, settings, options)
+        if options.fix_zero:
+            data_field = gwy.gwy_app_data_browser_get_current(gwy.APP_DATA_FIELD)
+            if self._is_height_channel(data_field):
+                self.logger.debug('Applying fix-zero to height channel')
+                gwy.gwy_process_func_run('fix_zero', container, gwy.RUN_IMMEDIATE)
+            else:
+                self.logger.debug('Skipping fix-zero for non-height channel')
+
+    def _run_align_rows(self, container, settings, options):
+        gwy = self.gwy
+        method = 0 if options.align_method == 'polynomial' else 2
+        settings.set_int32_by_name('/module/linematch/method', method)
+        if method == 0:
+            degree = options.align_degree if options.align_degree is not None else 2
+            try:
+                degree_value = int(degree)
+            except Exception:
+                degree_value = 2
+            if degree_value < 0:
+                degree_value = 0
+            settings.set_int32_by_name('/module/linematch/degree', degree_value)
+        self.logger.debug('Running align_rows with method %d', method)
         gwy.gwy_process_func_run('align_rows', container, gwy.RUN_IMMEDIATE)
+
+    def _is_height_channel(self, data_field):
+        if data_field is None:
+            return False
+        try:
+            unit = data_field.get_si_unit_z()
+        except AttributeError:
+            return True
+        if unit is None:
+            return True
+        representations = []
+        for attr in ('get_string', 'get_unit_string', 'get_symbol', 'get_si_string'):
+            getter = getattr(unit, attr, None)
+            if getter is None:
+                continue
+            try:
+                value = getter()
+            except Exception:
+                continue
+            if value:
+                representations.append(value)
+        for text in representations:
+            normalized = str(text).strip().lower()
+            if normalized in ('m', 'nm', 'pm'):
+                return True
+        return False
+
+    def _write_statistics(self, data_field, output_path):
+        stats = self._collect_statistics(data_field)
+        if not stats:
+            return None
+        base, _ = os.path.splitext(output_path)
+        stats_path = base + '_stats.txt'
+        try:
+            directory = os.path.dirname(stats_path)
+            if directory and not os.path.isdir(directory):
+                os.makedirs(directory)
+            with open(stats_path, 'w') as handle:
+                for key in sorted(stats):
+                    handle.write('%s: %s\n' % (key, stats[key]))
+            self.logger.info('Statistics written to %s', stats_path)
+            return stats_path
+        except Exception as exc:
+            self.logger.error('Failed to write statistics for %s: %s', output_path, exc)
+            self.logger.debug('Statistics error details', exc_info=True)
+            return None
+
+    def _collect_statistics(self, data_field):
+        if data_field is None:
+            return {}
+        stats = {}
+        attribute_map = [
+            ('get_min', 'min'),
+            ('get_max', 'max'),
+            ('get_mean', 'mean'),
+            ('get_rms', 'rms'),
+            ('get_skew', 'skewness'),
+            ('get_kurtosis', 'kurtosis'),
+        ]
+        for attr_name, label in attribute_map:
+            getter = getattr(data_field, attr_name, None)
+            if getter is None:
+                continue
+            try:
+                value = getter()
+            except Exception:
+                continue
+            if value is not None:
+                stats[label] = '%.6g' % float(value)
+        try:
+            stats['x_pixels'] = int(data_field.get_xres())
+            stats['y_pixels'] = int(data_field.get_yres())
+        except Exception:
+            pass
+        try:
+            stats['x_size_nm'] = '%.6g' % (float(data_field.get_xreal()) * 1e9)
+            stats['y_size_nm'] = '%.6g' % (float(data_field.get_yreal()) * 1e9)
+        except Exception:
+            pass
+        return stats
+
+    def _generate_acf_image(self, container, settings, output_path, scaled_channel_id):
+        gwy = self.gwy
+        try:
+            settings.set_boolean_by_name('/module/acf2d/create_image', True)
+        except Exception:
+            try:
+                settings.set_int32_by_name('/module/acf2d/create_image', 1)
+            except Exception:
+                pass
+        try:
+            gwy.gwy_process_func_run('acf2d', container, gwy.RUN_IMMEDIATE)
+            data_ids = gwy.gwy_app_data_browser_get_data_ids(container)
+            if not data_ids:
+                return None
+            acf_channel = data_ids[-1]
+            gwy.gwy_app_data_browser_select_data_field(container, acf_channel)
+            base, _ = os.path.splitext(output_path)
+            acf_path = base + '_acf.png'
+            self._save_container(container, acf_path, interactive=False)
+            self.logger.info('ACF saved to %s', acf_path)
+            try:
+                gwy.gwy_app_data_browser_select_data_field(container, scaled_channel_id)
+            except Exception:
+                pass
+            return acf_path
+        except Exception as exc:
+            self.logger.error('Failed to generate ACF for %s: %s', output_path, exc)
+            self.logger.debug('ACF generation error details', exc_info=True)
+            return None
 
     def _save_container(self, container, output_path, interactive):
         gwy = self.gwy

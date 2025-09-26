@@ -78,7 +78,10 @@ target video duration (which controls the playback speed multiplier embedded in
 the filename), choose a constant frame rate via `--video-fps`, and turn on frame
 stabilization with cropping to the shared overlap of all frames.  The `--filter`
 flag defaults to `.ibw` so the raw Bruker files are processed without picking up
-unrelated data.
+unrelated data.  Image-processing steps can now be toggled from the CLI as well:
+`--no-flatten`, `--no-align-rows`, `--align-method`, `--align-degree`,
+`--remove-scars`, `--no-fix-zero`, `--stats`, and `--acf` mirror the GUI
+checkboxes so scripted runs match interactive sessions.
 
 ### Video stitching
 
@@ -101,12 +104,19 @@ shared image area to avoid edge artifacts.  CLI flags (``--stabilize``,
 ``--stabilize-shakiness`` and friends) map directly to the constants exposed in
 `run_batch.py` and `render_video.py`.
 
+When statistics export is enabled the processor writes a companion
+`*_stats.txt` file next to each PNG summarising min, max, mean, RMS, skewness,
+and kurtosis values along with the pixel and scan dimensions in nanometres.  ACF
+generation adds an additional `*_acf.png` rendered from the processed data so
+each selected channel produces both the cleaned height image and its
+autocorrelation counterpart.
+
 ### Example scripts
 
 The `run_batch.py` script keeps the editable constants approach of the original
 script while delegating the heavy lifting to the reusable package.  Adjust the
-constants (including the list of channel numbers) at the top of the file and
-execute it with Python:
+constants (including the list of channel numbers and the new processing toggles)
+at the top of the file and execute it with Python:
 
 ```bash
 python run_batch.py
@@ -147,4 +157,8 @@ Prefer a graphical workflow?  Launch `run_batch_gui.py` to pick the folder,
 channels, pixel count, optional video duration, constant frame rate, and
 stabilization controls through a Tkinter interface.  The folder selector starts
 in `D:\AFM Images` and automatically proposes a timestamped
-`output_YYYYMMDD_HHMMSS` subdirectory so each run lands in its own folder.
+`output_YYYYMMDD_HHMMSS` subdirectory so each run lands in its own folder.  New
+checkboxes let you toggle flattening, row alignment (median of differences or a
+configurable polynomial degree), scar removal, height-only zero fixing, stats
+export, and ACF generation.  The GUI also remembers the last settings you used
+so reopening the tool restores your most recent inputs.

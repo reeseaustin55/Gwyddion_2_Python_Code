@@ -4,7 +4,8 @@ import argparse
 import logging
 import sys
 
-from .config import BatchConfig, VideoSettings, StabilizationSettings
+from .config import (BatchConfig, VideoSettings, StabilizationSettings,
+                     ProcessingOptions)
 from .gwyddion_loader import import_gwyddion
 from .processor import GwyddionBatchProcessor
 
@@ -52,6 +53,42 @@ def build_arg_parser():
     parser.add_argument('--crop-shared', dest='stabilize_crop', action='store_true',
                         help='Crop the stabilized video to the shared frame area (default).')
     parser.set_defaults(stabilize=False)
+    parser.add_argument('--no-flatten', dest='flatten', action='store_false', default=True,
+                        help='Disable the flattening (level) step.')
+    parser.add_argument('--flatten', dest='flatten', action='store_true',
+                        help='Enable the flattening (level) step (default).')
+    parser.add_argument('--no-align-rows', dest='align_rows', action='store_false', default=True,
+                        help='Skip row alignment processing.')
+    parser.add_argument('--align-rows', dest='align_rows', action='store_true',
+                        help='Enable row alignment processing (default).')
+    parser.add_argument('--align-method', dest='align_method', choices=['median', 'polynomial'],
+                        default='polynomial', help='Alignment method: median (2) or polynomial (0).')
+    parser.add_argument('--align-degree', dest='align_degree', type=int, default=2,
+                        help='Polynomial degree when using polynomial row alignment (default: 2).')
+    parser.add_argument('--remove-scars', dest='remove_scars', action='store_true', default=False,
+                        help='Enable scar removal on processed images.')
+    parser.add_argument('--no-remove-scars', dest='remove_scars', action='store_false',
+                        help='Disable scar removal (default).')
+    parser.add_argument('--no-fix-zero', dest='fix_zero', action='store_false', default=True,
+                        help='Skip zero fixing even for height channels.')
+    parser.add_argument('--fix-zero', dest='fix_zero', action='store_true',
+                        help='Enable zero fixing on height channels (default).')
+    parser.add_argument('--stats', dest='export_stats', action='store_true', default=False,
+                        help='Export per-image statistics alongside the PNG output.')
+    parser.add_argument('--no-stats', dest='export_stats', action='store_false',
+                        help='Disable statistics export (default).')
+    parser.add_argument('--acf', dest='generate_acf', action='store_true', default=False,
+                        help='Generate and export an autocorrelation image for each processed channel.')
+    parser.add_argument('--no-acf', dest='generate_acf', action='store_false',
+                        help='Disable autocorrelation export (default).')
+    parser.set_defaults(
+        flatten=True,
+        align_rows=True,
+        remove_scars=False,
+        fix_zero=True,
+        export_stats=False,
+        generate_acf=False,
+    )
     return parser
 
 
@@ -93,6 +130,16 @@ def main(argv=None):
             frame_rate=video_frame_rate,
         )
         channel_numbers = args.channels or [0]
+        processing_options = ProcessingOptions(
+            flatten=args.flatten,
+            align_rows=args.align_rows,
+            align_method=args.align_method,
+            align_degree=args.align_degree,
+            remove_scars=args.remove_scars,
+            fix_zero=args.fix_zero,
+            export_stats=args.export_stats,
+            generate_acf=args.generate_acf,
+        )
         config = BatchConfig(
             folder_path=args.folder,
             channel_numbers=channel_numbers,
@@ -101,6 +148,7 @@ def main(argv=None):
             gwyddion_paths=args.gwyddion_paths,
             output_directory=args.output_directory,
             video_settings=video_settings,
+            processing_options=processing_options,
         )
         gwy = import_gwyddion(config.gwyddion_paths, logger=logger)
     except Exception as exc:

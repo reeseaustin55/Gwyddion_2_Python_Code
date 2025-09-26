@@ -11,6 +11,7 @@ from gwyddion_batch import (
     GwyddionBatchProcessor,
     VideoSettings,
     StabilizationSettings,
+    ProcessingOptions,
     import_gwyddion,
 )
 
@@ -40,6 +41,15 @@ STABILIZE_MINCONTRAST = 0.3
 STABILIZE_SMOOTHING = 15
 STABILIZE_TRIPOD = True
 STABILIZE_CROP_SHARED = True
+# Image processing toggles --------------------------------------------------
+FLATTENING_ENABLED = True
+ALIGN_ROWS_ENABLED = True
+ALIGN_METHOD = 'polynomial'  # 'median' or 'polynomial'
+ALIGN_DEGREE = 2
+REMOVE_SCARS = False
+FIX_ZERO = True
+EXPORT_STATS = False
+GENERATE_ACF = False
 # ---------------------------------------------------------------------------
 
 
@@ -65,6 +75,17 @@ def main():
         frame_rate=VIDEO_FRAME_RATE if VIDEO_ENABLED else None,
     )
 
+    processing_options = ProcessingOptions(
+        flatten=FLATTENING_ENABLED,
+        align_rows=ALIGN_ROWS_ENABLED,
+        align_method=ALIGN_METHOD,
+        align_degree=ALIGN_DEGREE,
+        remove_scars=REMOVE_SCARS,
+        fix_zero=FIX_ZERO,
+        export_stats=EXPORT_STATS,
+        generate_acf=GENERATE_ACF,
+    )
+
     config = BatchConfig(
         folder_path=FOLDER_PATH,
         channel_numbers=CHANNEL_NUMBERS,
@@ -74,6 +95,7 @@ def main():
         output_directory=(os.path.join(FOLDER_PATH, OUTPUT_SUBDIR)
                           if OUTPUT_SUBDIR else None),
         video_settings=video_settings,
+        processing_options=processing_options,
     )
 
     gwy = import_gwyddion(config.gwyddion_paths, logger=logging.getLogger(__name__))

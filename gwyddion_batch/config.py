@@ -6,6 +6,32 @@ import datetime
 import os
 
 
+class ProcessingOptions(object):
+    """Toggles controlling the per-image Gwyddion processing pipeline."""
+
+    def __init__(self, flatten=True, align_rows=True,
+                 align_method='polynomial', align_degree=2,
+                 remove_scars=False, fix_zero=True,
+                 export_stats=False, generate_acf=False):
+        self.flatten = bool(flatten)
+        self.align_rows = bool(align_rows)
+        method = (align_method or 'polynomial').lower()
+        if method not in ('median', 'polynomial'):
+            method = 'polynomial'
+        self.align_method = method
+        try:
+            degree_value = int(align_degree)
+        except Exception:
+            degree_value = 2
+        if degree_value < 0:
+            degree_value = 0
+        self.align_degree = degree_value
+        self.remove_scars = bool(remove_scars)
+        self.fix_zero = bool(fix_zero)
+        self.export_stats = bool(export_stats)
+        self.generate_acf = bool(generate_acf)
+
+
 class StabilizationSettings(object):
     """Settings controlling optional video stabilization."""
 
@@ -118,7 +144,8 @@ class BatchConfig(object):
     def __init__(self, folder_path, channel_number=0, pixel_count=512,
                  file_filter=None, gwyddion_paths=None, output_directory=None,
                  video_settings=None, stabilization_settings=None,
-                 channel_numbers=None, run_timestamp=None):
+                 channel_numbers=None, run_timestamp=None,
+                 processing_options=None):
         if not folder_path:
             raise ValueError('folder_path is required')
         path_style = _detect_path_style(folder_path)
@@ -160,6 +187,9 @@ class BatchConfig(object):
             video_settings.stabilization = stabilization_settings
         self.video = video_settings
         self.stabilization = self.video.stabilization
+        if processing_options is None:
+            processing_options = ProcessingOptions()
+        self.processing = processing_options
 
     def supported_extensions(self, defaults):
         """Return the list of extensions that should be processed."""

@@ -3,6 +3,7 @@
 from __future__ import absolute_import, print_function
 
 import datetime
+import json
 import logging
 import os
 import threading
@@ -21,13 +22,15 @@ try:  # Python 2.7
 except ImportError:  # pragma: no cover - Python 3 fallback
     import queue
 
-from .config import BatchConfig, VideoSettings, StabilizationSettings
+from .config import (BatchConfig, VideoSettings, StabilizationSettings,
+                     ProcessingOptions)
 from .gwyddion_loader import import_gwyddion
 from .processor import GwyddionBatchProcessor
 
 
 DEFAULT_DATA_FOLDER = r'D:\AFM Images'
 DEFAULT_FFMPEG_PATH = r"C:\\Program Files\\ffmpeg-2025-02-24-git-6232f416b1-full_build\\bin\\ffmpeg.exe"
+SETTINGS_FILE = os.path.join(os.path.expanduser('~'), '.gwyddion_batch_gui.json')
 
 
 class _QueueHandler(logging.Handler):
@@ -54,31 +57,100 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
         self.log_queue = queue.Queue()
         self.processing_thread = None
 
+        self._defaults = self._load_persisted_settings()
+
         self._build_variables()
         self._build_ui()
 
     # ------------------------------------------------------------------ UI --
+    def _load_persisted_settings(self):
+        try:
+            with open(SETTINGS_FILE, 'r') as handle:
+                data = json.load(handle)
+                if isinstance(data, dict):
+                    return data
+        except Exception:
+            pass
+        return {}
+
+    def _save_persisted_settings(self, config):
+        data = {
+            'folder': self.folder_var.get(),
+            'output_directory': self.output_dir_var.get(),
+            'channels': self.channels_var.get(),
+            'pixel_count': self.pixel_count_var.get(),
+            'file_filter': self.filter_var.get(),
+            'video': {
+                'enabled': bool(self.video_enabled_var.get()),
+                'duration': self.video_duration_var.get(),
+                'frame_rate': self.video_frame_rate_var.get(),
+                'stabilization': {
+                    'enabled': bool(self.stabilize_var.get()),
+                    'shakiness': self.shakiness_var.get(),
+                    'accuracy': self.accuracy_var.get(),
+                    'stepsize': self.stepsize_var.get(),
+                    'mincontrast': self.mincontrast_var.get(),
+                    'smoothing': self.smoothing_var.get(),
+                    'tripod': bool(self.tripod_var.get()),
+                    'crop_shared_area': bool(self.crop_var.get()),
+                },
+            },
+            'processing': {
+                'flatten': bool(self.flatten_var.get()),
+                'align_rows': bool(self.align_rows_var.get()),
+                'align_method': self.align_method_var.get(),
+                'align_degree': self.align_degree_var.get(),
+                'remove_scars': bool(self.remove_scars_var.get()),
+                'fix_zero': bool(self.fix_zero_var.get()),
+                'export_stats': bool(self.stats_var.get()),
+                'generate_acf': bool(self.acf_var.get()),
+            },
+        }
+        try:
+            with open(SETTINGS_FILE, 'w') as handle:
+                json.dump(data, handle, indent=2, sort_keys=True)
+        except Exception:
+            # Persistence is a convenience feature, so failures are ignored.
+            pass
+
     def _build_variables(self):
-        self.folder_var = tk.StringVar(value=DEFAULT_DATA_FOLDER)
-        self.output_dir_var = tk.StringVar(
-            value=self._default_output_for(DEFAULT_DATA_FOLDER)
-        )
-        self.channels_var = tk.StringVar(value='0')
-        self.pixel_count_var = tk.StringVar(value='1024')
-        self.filter_var = tk.StringVar(value='.ibw')
+        defaults = self._defaults
+        folder_default = defaults.get('folder', DEFAULT_DATA_FOLDER)
+        output_default = defaults.get('output_directory')
+        if not output_default:
+            output_default = self._default_output_for(folder_default)
 
-        self.video_enabled_var = tk.IntVar()
-        self.video_duration_var = tk.StringVar(value='10')
-        self.video_frame_rate_var = tk.StringVar(value='30')
+        self.folder_var = tk.StringVar(value=folder_default)
+        self.output_dir_var = tk.StringVar(value=output_default)
+        self.channels_var = tk.StringVar(value=defaults.get('channels', '0'))
+        self.pixel_count_var = tk.StringVar(value=str(defaults.get('pixel_count', '1024')))
+        self.filter_var = tk.StringVar(value=defaults.get('file_filter', '.ibw'))
 
-        self.stabilize_var = tk.IntVar()
-        self.shakiness_var = tk.StringVar(value='5')
-        self.accuracy_var = tk.StringVar(value='9')
-        self.stepsize_var = tk.StringVar(value='6')
-        self.mincontrast_var = tk.StringVar(value='0.3')
-        self.smoothing_var = tk.StringVar(value='15')
-        self.tripod_var = tk.IntVar(value=1)
-        self.crop_var = tk.IntVar(value=1)
+        video_defaults = defaults.get('video', {})
+        self.video_enabled_var = tk.IntVar(value=1 if video_defaults.get('enabled') else 0)
+        self.video_duration_var = tk.StringVar(value=str(video_defaults.get('duration', '10')))
+        self.video_frame_rate_var = tk.StringVar(value=str(video_defaults.get('frame_rate', '30')))
+
+        stabilization_defaults = video_defaults.get('stabilization', {})
+        self.stabilize_var = tk.IntVar(value=1 if stabilization_defaults.get('enabled') else 0)
+        self.shakiness_var = tk.StringVar(value=str(stabilization_defaults.get('shakiness', '5')))
+        self.accuracy_var = tk.StringVar(value=str(stabilization_defaults.get('accuracy', '9')))
+        self.stepsize_var = tk.StringVar(value=str(stabilization_defaults.get('stepsize', '6')))
+        self.mincontrast_var = tk.StringVar(value=str(stabilization_defaults.get('mincontrast', '0.3')))
+        self.smoothing_var = tk.StringVar(value=str(stabilization_defaults.get('smoothing', '15')))
+        self.tripod_var = tk.IntVar(value=1 if stabilization_defaults.get('tripod', True) else 0)
+        self.crop_var = tk.IntVar(value=1 if stabilization_defaults.get('crop_shared_area', True) else 0)
+
+        processing_defaults = defaults.get('processing', {})
+        self.flatten_var = tk.IntVar(value=1 if processing_defaults.get('flatten', True) else 0)
+        self.align_rows_var = tk.IntVar(value=1 if processing_defaults.get('align_rows', True) else 0)
+        align_method = processing_defaults.get('align_method', 'polynomial')
+        self.align_method_var = tk.StringVar(value=align_method)
+        self.align_degree_var = tk.StringVar(value=str(processing_defaults.get('align_degree', 2)))
+        self.remove_scars_var = tk.IntVar(value=1 if processing_defaults.get('remove_scars') else 0)
+        self.fix_zero_var = tk.IntVar(value=1 if processing_defaults.get('fix_zero', True) else 0)
+        self.stats_var = tk.IntVar(value=1 if processing_defaults.get('export_stats') else 0)
+        self.acf_var = tk.IntVar(value=1 if processing_defaults.get('generate_acf') else 0)
 
     def _build_ui(self):
         main = tk.Frame(self.root)
@@ -102,6 +174,68 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
         self._video_entries = []
         self._stabilization_entries = []
         self._stabilization_checkbuttons = []
+        self._align_method_buttons = []
+        self._align_degree_entry = None
+
+        processing_frame = tk.LabelFrame(main, text='Image processing')
+        processing_frame.grid(row=row, column=0, columnspan=3, sticky='nsew', pady=(10, 0))
+        processing_frame.columnconfigure(1, weight=1)
+
+        flatten_cb = tk.Checkbutton(processing_frame, text='Flattening', variable=self.flatten_var)
+        flatten_cb.grid(row=0, column=0, columnspan=3, sticky='w')
+
+        align_cb = tk.Checkbutton(
+            processing_frame,
+            text='Align rows',
+            variable=self.align_rows_var,
+            command=self._toggle_align_controls,
+        )
+        align_cb.grid(row=1, column=0, sticky='w')
+
+        method_frame = tk.Frame(processing_frame)
+        method_frame.grid(row=1, column=1, columnspan=2, sticky='w')
+        median_rb = tk.Radiobutton(
+            method_frame,
+            text='Median of differences',
+            variable=self.align_method_var,
+            value='median',
+            command=self._toggle_align_controls,
+        )
+        median_rb.pack(side='left', padx=(0, 10))
+        polynomial_rb = tk.Radiobutton(
+            method_frame,
+            text='Polynomial',
+            variable=self.align_method_var,
+            value='polynomial',
+            command=self._toggle_align_controls,
+        )
+        polynomial_rb.pack(side='left')
+        self._align_method_buttons.extend([median_rb, polynomial_rb])
+
+        self._align_degree_entry = self._add_labeled_entry(
+            processing_frame,
+            'Polynomial degree:',
+            self.align_degree_var,
+            2,
+        )
+
+        scars_cb = tk.Checkbutton(processing_frame, text='Scars remove', variable=self.remove_scars_var)
+        scars_cb.grid(row=3, column=0, columnspan=3, sticky='w')
+
+        fix_zero_cb = tk.Checkbutton(
+            processing_frame,
+            text='Fix zero (height channels only)',
+            variable=self.fix_zero_var,
+        )
+        fix_zero_cb.grid(row=4, column=0, columnspan=3, sticky='w')
+
+        stats_cb = tk.Checkbutton(processing_frame, text='Export stats file', variable=self.stats_var)
+        stats_cb.grid(row=5, column=0, columnspan=3, sticky='w')
+
+        acf_cb = tk.Checkbutton(processing_frame, text='Generate ACF image', variable=self.acf_var)
+        acf_cb.grid(row=6, column=0, columnspan=3, sticky='w')
+
+        row += 1
 
         video_frame = tk.LabelFrame(main, text='Video rendering')
         video_frame.grid(row=row, column=0, columnspan=3, sticky='nsew', pady=(10, 0))
@@ -176,6 +310,7 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
         scrollbar.grid(row=0, column=1, sticky='ns')
         self.log_text.configure(yscrollcommand=scrollbar.set)
 
+        self._toggle_align_controls()
         self._toggle_video_fields()
         self._toggle_stabilization_fields()
 
@@ -242,6 +377,18 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
             checkbox.configure(state=state)
         if not video_enabled:
             self.stabilize_var.set(0)
+
+    def _toggle_align_controls(self):
+        enabled = bool(self.align_rows_var.get())
+        state = tk.NORMAL if enabled else tk.DISABLED
+        for button in self._align_method_buttons:
+            button.configure(state=state)
+        if self._align_degree_entry is not None:
+            if enabled and self.align_method_var.get() == 'polynomial':
+                degree_state = tk.NORMAL
+            else:
+                degree_state = tk.DISABLED
+            self._align_degree_entry.configure(state=degree_state)
 
     # --------------------------------------------------------------- runtime --
     def start_processing(self):
@@ -324,6 +471,21 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
             frame_rate=frame_rate,
         )
 
+        try:
+            align_degree = int(self.align_degree_var.get())
+        except Exception:
+            align_degree = 2
+        processing_options = ProcessingOptions(
+            flatten=bool(self.flatten_var.get()),
+            align_rows=bool(self.align_rows_var.get()),
+            align_method=self.align_method_var.get(),
+            align_degree=align_degree,
+            remove_scars=bool(self.remove_scars_var.get()),
+            fix_zero=bool(self.fix_zero_var.get()),
+            export_stats=bool(self.stats_var.get()),
+            generate_acf=bool(self.acf_var.get()),
+        )
+
         config = BatchConfig(
             folder_path=folder,
             channel_numbers=channels,
@@ -332,9 +494,11 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
             output_directory=output_directory,
             video_settings=video_settings,
             run_timestamp=datetime.datetime.now(),
+            processing_options=processing_options,
         )
 
         self.output_dir_var.set(config.output_directory)
+        self._save_persisted_settings(config)
         return config
 
     def _parse_float(self, value):
