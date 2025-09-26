@@ -10,6 +10,7 @@ from gwyddion_batch import (
     BatchConfig,
     GwyddionBatchProcessor,
     VideoSettings,
+    StabilizationSettings,
     import_gwyddion,
 )
 
@@ -29,11 +30,31 @@ FRAME_DURATION = 0.1  # seconds
 FRAME_RATE = None  # Optional alternative to FRAME_DURATION
 PIXEL_FORMAT = 'yuv420p'
 FFMPEG_EXTRA_ARGS = []  # e.g. ['-vf', 'scale=ceil(iw/2)*2:ceil(ih/2)*2']
+# Stabilization settings ----------------------------------------------------
+STABILIZE_VIDEO = False
+STABILIZE_SHAKINESS = 5
+STABILIZE_ACCURACY = 9
+STABILIZE_STEPSIZE = 6
+STABILIZE_MINCONTRAST = 0.3
+STABILIZE_SMOOTHING = 15
+STABILIZE_TRIPOD = True
+STABILIZE_CROP_SHARED = True
 # ---------------------------------------------------------------------------
 
 
 def main():
     logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+
+    stabilization_settings = StabilizationSettings(
+        enabled=STABILIZE_VIDEO,
+        shakiness=STABILIZE_SHAKINESS,
+        accuracy=STABILIZE_ACCURACY,
+        stepsize=STABILIZE_STEPSIZE,
+        mincontrast=STABILIZE_MINCONTRAST,
+        smoothing=STABILIZE_SMOOTHING,
+        tripod=STABILIZE_TRIPOD,
+        crop_shared_area=STABILIZE_CROP_SHARED,
+    )
 
     video_settings = VideoSettings(
         enabled=VIDEO_ENABLED,
@@ -43,6 +64,7 @@ def main():
         frame_duration=FRAME_DURATION,
         pixel_format=PIXEL_FORMAT,
         extra_args=FFMPEG_EXTRA_ARGS,
+        stabilization=stabilization_settings,
     )
 
     config = BatchConfig(

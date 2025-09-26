@@ -5,12 +5,28 @@ from __future__ import absolute_import
 import os
 
 
+class StabilizationSettings(object):
+    """Settings controlling optional video stabilization."""
+
+    def __init__(self, enabled=False, shakiness=5, accuracy=9, stepsize=6,
+                 mincontrast=0.3, smoothing=15, tripod=True,
+                 crop_shared_area=True):
+        self.enabled = bool(enabled)
+        self.shakiness = int(shakiness) if shakiness is not None else 5
+        self.accuracy = int(accuracy) if accuracy is not None else 9
+        self.stepsize = int(stepsize) if stepsize is not None else 6
+        self.mincontrast = float(mincontrast) if mincontrast is not None else 0.3
+        self.smoothing = int(smoothing) if smoothing is not None else 15
+        self.tripod = bool(tripod)
+        self.crop_shared_area = bool(crop_shared_area)
+
+
 class VideoSettings(object):
     """Configuration for optional video rendering of processed images."""
 
     def __init__(self, enabled=False, output_path=None, ffmpeg_path='ffmpeg',
                  frame_rate=None, frame_duration=0.1, pixel_format='yuv420p',
-                 extra_args=None):
+                 extra_args=None, stabilization=None):
         self.enabled = bool(enabled)
         self.output_path = output_path
         self.ffmpeg_path = ffmpeg_path or 'ffmpeg'
@@ -19,6 +35,7 @@ class VideoSettings(object):
                                if frame_duration is not None else None)
         self.pixel_format = pixel_format or 'yuv420p'
         self.extra_args = list(extra_args or [])
+        self.stabilization = stabilization or StabilizationSettings()
 
 
 class BatchConfig(object):
@@ -26,7 +43,7 @@ class BatchConfig(object):
 
     def __init__(self, folder_path, channel_number=0, pixel_count=512,
                  file_filter=None, gwyddion_paths=None, output_directory=None,
-                 video_settings=None):
+                 video_settings=None, stabilization_settings=None):
         if not folder_path:
             raise ValueError('folder_path is required')
         self.folder_path = os.path.abspath(folder_path)
@@ -37,7 +54,12 @@ class BatchConfig(object):
         self.output_directory = (os.path.abspath(output_directory)
                                  if output_directory
                                  else os.path.join(self.folder_path, 'processed'))
-        self.video = video_settings or VideoSettings()
+        if video_settings is None:
+            video_settings = VideoSettings()
+        if stabilization_settings is not None:
+            video_settings.stabilization = stabilization_settings
+        self.video = video_settings
+        self.stabilization = self.video.stabilization
 
     def supported_extensions(self, defaults):
         """Return the list of extensions that should be processed."""

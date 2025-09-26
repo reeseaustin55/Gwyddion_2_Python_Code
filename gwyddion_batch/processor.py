@@ -234,5 +234,6 @@ class GwyddionBatchProcessor(object):
             pixel_format=settings.pixel_format,
             extra_args=settings.extra_args,
             logger=self.logger,
+            stabilization=settings.stabilization,
         )
         return video_path

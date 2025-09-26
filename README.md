@@ -19,9 +19,14 @@ gwyddion_batch/
 └── video.py               # ffmpeg-based video stitching helpers
 ```
 
-A helper script, `run_batch.py`, demonstrates how the API can be consumed from
+Helper scripts in the repository demonstrate how the API can be consumed from
 Python code while preserving the editable "user settings" block from the
-original script.
+original script:
+
+* `run_batch.py` runs the full image processing workflow (optionally including
+  video creation).
+* `render_video.py` stitches already-processed images into a video without
+  reprocessing the raw SPM data.
 
 ## Installation
 
@@ -63,7 +68,8 @@ python -m gwyddion_batch.cli D:\Data\MyExperiment --pixels 1024 --channel 0
 ```
 
 Use `--help` for the full list of options.  Additional flags let you choose the
-output directory and enable automatic video rendering (requires `ffmpeg`).
+output directory, enable automatic video rendering (requires `ffmpeg`), and
+turn on frame stabilization with cropping to the shared overlap of all frames.
 
 ### Video stitching
 
@@ -73,7 +79,14 @@ file similar to the batch scripts provided previously.  You can customise the
 frame rate, per-frame duration, pixel format, and pass through additional
 arguments to `ffmpeg`.
 
-### Example script
+Enable the new stabilization option to perform a two-pass `ffmpeg` run using
+``vidstab`` filters.  The detection pass measures per-frame drift, the
+transformation pass applies the correction, and the output is cropped to the
+shared image area to avoid edge artifacts.  CLI flags (``--stabilize``,
+``--stabilize-shakiness`` and friends) map directly to the constants exposed in
+`run_batch.py` and `render_video.py`.
+
+### Example scripts
 
 The `run_batch.py` script keeps the editable constants approach of the original
 script while delegating the heavy lifting to the reusable package.  Adjust the
@@ -83,15 +96,24 @@ constants at the top of the file and execute it with Python:
 python run_batch.py
 ```
 
-The script exposes explicit constants for the output subdirectory and video
-rendering options, mirroring the available command line flags.
+The script exposes explicit constants for the output subdirectory, video
+rendering options, and stabilization parameters, mirroring the available
+command line flags.
+
+`render_video.py` offers the same configurable pattern for stitching images
+that have already been processed.  Point the script at your processed image
+folder, enable stabilization if desired, and run it directly:
+
+```bash
+python render_video.py
+```
 
 ## Development
 
 Run a basic syntax check with:
 
 ```bash
-python -m compileall gwyddion_batch run_batch.py
+python -m compileall gwyddion_batch run_batch.py render_video.py
 ```
 
 This ensures all modules are syntactically correct without requiring the
