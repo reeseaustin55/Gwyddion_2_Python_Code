@@ -141,6 +141,34 @@ def _compute_crop_region(dxs, dys, width, height):
     return crop_x, crop_y, crop_width, crop_height
 
 
+def _compute_repeat_counts(durations, default_duration, frame_rate, frame_count):
+    """Return repetition counts for each frame to match ``frame_rate``."""
+    repeats = []
+    try:
+        frame_rate = float(frame_rate) if frame_rate is not None else None
+    except Exception:
+        frame_rate = None
+    if frame_rate is None or frame_rate <= 0:
+        return repeats
+    fallback_duration = 1.0 / frame_rate
+    for index in range(frame_count):
+        if index < len(durations):
+            duration_value = durations[index]
+        else:
+            duration_value = default_duration
+        try:
+            duration_value = float(duration_value) if duration_value is not None else None
+        except Exception:
+            duration_value = None
+        if duration_value is None or duration_value <= 0:
+            duration_value = fallback_duration
+        repeat = int(round(duration_value * frame_rate))
+        if repeat <= 0:
+            repeat = 1
+        repeats.append(repeat)
+    return repeats
+
+
 def _build_detect_filter(stabilization, transform_path):
     parts = [
         'vidstabdetect',
@@ -172,6 +200,7 @@ def _build_transform_filter(stabilization, transform_path):
 def stitch_images_to_video(image_paths, output_path, ffmpeg_path='ffmpeg',
                            frame_durations=None, frame_duration=None,
                            pixel_format='yuv420p', extra_args=None,
+                           frame_rate=None,
                            logger=None, stabilization=None):
     """Combine ``image_paths`` into a video using ffmpeg."""
     if not image_paths:
@@ -188,27 +217,54 @@ def stitch_images_to_video(image_paths, output_path, ffmpeg_path='ffmpeg',
     try:
         list_handle, list_path = tempfile.mkstemp(prefix='gwyddion_frames_', suffix='.txt')
         os.close(list_handle)
+        try:
+            sanitized_rate = float(frame_rate) if frame_rate is not None else None
+        except Exception:
+            sanitized_rate = None
+        if sanitized_rate is not None and sanitized_rate <= 0:
+            sanitized_rate = None
+
         with io.open(list_path, 'w', encoding='utf-8') as handle:
             durations = list(frame_durations or [])
             default_duration = None
             if frame_duration is not None:
-                default_duration = float(frame_duration)
-            for index, path in enumerate(image_paths):
-                text_path = _ensure_text(path)
-                handle.write(u"file '%s'\n" % _escape_path(text_path))
-                duration_value = None
-                if index < len(durations):
-                    duration_value = durations[index]
-                elif default_duration is not None:
-                    duration_value = default_duration
-                if duration_value is not None:
-                    try:
-                        duration_float = float(duration_value)
-                    except Exception:
-                        duration_float = 0.0
-                    if duration_float <= 0:
-                        duration_float = 1e-3
-                    handle.write(u'duration %.6f\n' % duration_float)
+                try:
+                    default_duration = float(frame_duration)
+                except Exception:
+                    default_duration = None
+            repeat_counts = _compute_repeat_counts(
+                durations,
+                default_duration,
+                sanitized_rate,
+                len(image_paths),
+            )
+            use_repeats = bool(repeat_counts)
+            if use_repeats:
+                for index, path in enumerate(image_paths):
+                    repeat = repeat_counts[index] if index < len(repeat_counts) else 1
+                    if repeat <= 0:
+                        repeat = 1
+                    text_path = _ensure_text(path)
+                    escaped = _escape_path(text_path)
+                    for _ in range(repeat):
+                        handle.write(u"file '%s'\n" % escaped)
+            else:
+                for index, path in enumerate(image_paths):
+                    text_path = _ensure_text(path)
+                    handle.write(u"file '%s'\n" % _escape_path(text_path))
+                    duration_value = None
+                    if index < len(durations):
+                        duration_value = durations[index]
+                    elif default_duration is not None:
+                        duration_value = default_duration
+                    if duration_value is not None:
+                        try:
+                            duration_float = float(duration_value)
+                        except Exception:
+                            duration_float = 0.0
+                        if duration_float <= 0:
+                            duration_float = 1e-3
+                        handle.write(u'duration %.6f\n' % duration_float)
 
         command = [
             to_native_path(ffmpeg_path),
@@ -217,6 +273,10 @@ def stitch_images_to_video(image_paths, output_path, ffmpeg_path='ffmpeg',
             '-safe', '0',
             '-i', to_native_path(list_path),
         ]
+
+        use_repeats = bool(repeat_counts)
+        if use_repeats:
+            command.extend(['-r', '%.6f' % float(sanitized_rate)])
 
         filters = []
         if stabilization and getattr(stabilization, 'enabled', False):
@@ -262,7 +322,9 @@ def stitch_images_to_video(image_paths, output_path, ffmpeg_path='ffmpeg',
         if filters:
             command.extend(['-vf', ','.join(filters)])
 
-        if frame_durations or frame_duration is not None:
+        if use_repeats:
+            command.extend(['-vsync', 'cfr'])
+        elif frame_durations or frame_duration is not None:
             command.extend(['-vsync', 'vfr'])
         if pixel_format:
             command.extend(['-pix_fmt', pixel_format])

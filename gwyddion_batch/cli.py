@@ -10,6 +10,7 @@ from .processor import GwyddionBatchProcessor
 
 DEFAULT_FILE_FILTER = '.ibw'
 DEFAULT_VIDEO_DURATION = 10.0
+DEFAULT_VIDEO_FPS = 30.0
 
 
 def build_arg_parser():
@@ -35,6 +36,9 @@ def build_arg_parser():
     parser.add_argument('--video-duration', dest='video_duration', type=float,
                         default=DEFAULT_VIDEO_DURATION,
                         help='Length of the rendered video in seconds (default: 10).')
+    parser.add_argument('--video-fps', dest='video_fps', type=float,
+                        default=DEFAULT_VIDEO_FPS,
+                        help='Target frame rate for rendered videos (default: 30).')
     parser.add_argument('--ffmpeg', dest='ffmpeg_path', default='ffmpeg',
                         help='Path to the ffmpeg executable (default: ffmpeg).')
     parser.add_argument('--pixel-format', dest='pixel_format', default='yuv420p',
@@ -79,12 +83,14 @@ def main(argv=None):
             crop_shared_area=args.stabilize_crop,
         )
         video_duration = args.video_duration if args.video else None
+        video_frame_rate = args.video_fps if args.video else None
         video_settings = VideoSettings(
             enabled=args.video,
             ffmpeg_path=args.ffmpeg_path,
             duration_seconds=video_duration,
             pixel_format=args.pixel_format,
             stabilization=stabilization_settings,
+            frame_rate=video_frame_rate,
         )
         channel_numbers = args.channels or [0]
         config = BatchConfig(

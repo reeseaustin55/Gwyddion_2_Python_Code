@@ -69,6 +69,7 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
 
         self.video_enabled_var = tk.IntVar()
         self.video_duration_var = tk.StringVar(value='10')
+        self.video_frame_rate_var = tk.StringVar(value='30')
 
         self.stabilize_var = tk.IntVar()
         self.shakiness_var = tk.StringVar(value='5')
@@ -116,6 +117,13 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
             'Video duration (s):',
             self.video_duration_var,
             1,
+            entry_list=self._video_entries,
+        )
+        self._add_labeled_entry(
+            video_frame,
+            'Video FPS:',
+            self.video_frame_rate_var,
+            2,
             entry_list=self._video_entries,
         )
 
@@ -286,6 +294,11 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
         video_duration = self._parse_float(self.video_duration_var.get())
         if video_enabled and (video_duration is None or video_duration <= 0):
             raise ValueError('Video duration must be greater than zero when video stitching is enabled.')
+        frame_rate = self._parse_float(self.video_frame_rate_var.get())
+        if video_enabled and (frame_rate is None or frame_rate <= 0):
+            raise ValueError('Video frame rate must be greater than zero when video stitching is enabled.')
+        if not video_enabled:
+            frame_rate = None
 
         stabilization_enabled = video_enabled and bool(self.stabilize_var.get())
         stabilization = StabilizationSettings(
@@ -308,6 +321,7 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
             ffmpeg_path=ffmpeg_path,
             duration_seconds=video_duration,
             stabilization=stabilization,
+            frame_rate=frame_rate,
         )
 
         config = BatchConfig(

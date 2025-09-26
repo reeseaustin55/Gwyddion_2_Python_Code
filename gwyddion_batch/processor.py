@@ -296,6 +296,7 @@ class GwyddionBatchProcessor(object):
             video_path,
             ffmpeg_path=settings.ffmpeg_path,
             frame_durations=frame_durations,
+            frame_rate=settings.frame_rate,
             pixel_format=settings.pixel_format,
             extra_args=settings.extra_args,
             logger=self.logger,

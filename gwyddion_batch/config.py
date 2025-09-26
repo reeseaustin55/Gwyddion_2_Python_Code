@@ -27,7 +27,7 @@ class VideoSettings(object):
 
     def __init__(self, enabled=False, output_path=None, ffmpeg_path='ffmpeg',
                  duration_seconds=None, pixel_format='yuv420p',
-                 extra_args=None, stabilization=None):
+                 extra_args=None, stabilization=None, frame_rate=30.0):
         self.enabled = bool(enabled)
         self.output_path = output_path
         self.ffmpeg_path = ffmpeg_path or 'ffmpeg'
@@ -36,6 +36,13 @@ class VideoSettings(object):
         self.pixel_format = pixel_format or 'yuv420p'
         self.extra_args = list(extra_args or [])
         self.stabilization = stabilization or StabilizationSettings()
+        try:
+            rate_value = float(frame_rate) if frame_rate is not None else None
+        except Exception:
+            rate_value = None
+        if rate_value is not None and rate_value <= 0:
+            rate_value = None
+        self.frame_rate = rate_value
 
 
 def format_time_multiplier(multiplier):

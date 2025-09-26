@@ -75,9 +75,10 @@ python -m gwyddion_batch.cli D:\Data\MyExperiment --pixels 1024 --channel 0 --ch
 Use `--help` for the full list of options.  Additional flags let you choose the
 output directory, enable automatic video rendering (requires `ffmpeg`), set the
 target video duration (which controls the playback speed multiplier embedded in
-the filename), and turn on frame stabilization with cropping to the shared
-overlap of all frames.  The `--filter` flag defaults to `.ibw` so the raw Bruker
-files are processed without picking up unrelated data.
+the filename), choose a constant frame rate via `--video-fps`, and turn on frame
+stabilization with cropping to the shared overlap of all frames.  The `--filter`
+flag defaults to `.ibw` so the raw Bruker files are processed without picking up
+unrelated data.
 
 ### Video stitching
 
@@ -89,8 +90,9 @@ the tool will invoke `ffmpeg` using a concat file similar to the batch scripts
 provided previously.  The time span between the first and last source ``.ibw``
 file is divided by the requested video duration to compute a playback speed
 multiplier such as ``4X``; that multiplier is appended to the video filename.  Per
-frame durations are scaled automatically so the final video matches the
-requested length.
+frame durations are scaled automatically and then converted into repeated frames
+at a fixed frame rate (30 fps by default) so playback is smooth while still
+respecting the requested total duration.
 
 Enable the new stabilization option to perform a two-pass `ffmpeg` run using
 ``vidstab`` filters.  The detection pass measures per-frame drift, the
@@ -119,10 +121,11 @@ that have already been processed.  When launched without arguments it opens a
 folder selection dialog (defaulting to `D:\AFM Images`) so you can point it at
 your processed frames, even on Python 2.7.  The script reads the modification
 times of the corresponding `.ibw` files to determine the capture span, scales
-the per-frame durations to fit the requested video length, and appends the
-resulting multiplier to the output filename.  Command line flags let you
-override the glob pattern, ffmpeg path, stabilization parameters, source data
-folder, and output filename as needed:
+the per-frame durations to fit the requested video length, and then duplicates
+frames at the requested frame rate so the output runs smoothly while preserving
+the overall timing multiplier (which is appended to the filename).  Command line
+flags let you override the glob pattern, ffmpeg path, stabilization parameters,
+source data folder, frame rate, and output filename as needed:
 
 ```bash
 python render_video.py
@@ -141,7 +144,7 @@ This ensures all modules are syntactically correct without requiring the
 Gwyddion libraries at compile time.
 
 Prefer a graphical workflow?  Launch `run_batch_gui.py` to pick the folder,
-channels, pixel count, optional video duration, and stabilization controls
-through a Tkinter interface.  The folder selector starts in `D:\AFM Images` and
-automatically proposes a timestamped `output_YYYYMMDD_HHMMSS` subdirectory so
-each run lands in its own folder.
+channels, pixel count, optional video duration, constant frame rate, and
+stabilization controls through a Tkinter interface.  The folder selector starts
+in `D:\AFM Images` and automatically proposes a timestamped
+`output_YYYYMMDD_HHMMSS` subdirectory so each run lands in its own folder.
