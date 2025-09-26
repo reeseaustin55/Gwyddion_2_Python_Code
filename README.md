@@ -107,12 +107,13 @@ When video rendering is enabled the tool invokes `ffmpeg` using a concat file
 similar to the batch scripts provided previously.  The time span between the
 first and last source ``.ibw`` file is divided by the requested video duration to
 compute a playback speed multiplier such as ``4X``; that multiplier is appended
-to each rendered video filename.  By default the concat manifest records per-
-frame durations and ffmpeg runs in variable-frame-rate mode so playback follows
-the requested length while duplicating frames to maintain a constant playback
-rate of 30 fps.  Supplying `--video-fps 0` (or an explicit value) lets advanced
-users fall back to the pure-duration behaviour or pick a different constant
-rate.  Enabling
+to each rendered video filename.  Capture timestamps are honoured by default so
+frame durations reflect the original acquisition cadence while duplicated frames
+maintain a constant 30 fps playback.  The new `--uniform-frame-duration` flag
+(and GUI checkbox) skips the timestamp logic and gives every frame the same
+exposure, which can help when capture metadata is sparse.  Supplying
+`--video-fps 0` (or an explicit value) lets advanced users fall back to
+pure-duration behaviour or pick a different constant rate.  Enabling
 `--split-scans` (or the corresponding GUI checkbox) additionally produces UP and
 DOWN scan videos generated from alternating frames for both the processed data
 and any ACF imagery.

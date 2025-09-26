@@ -34,6 +34,7 @@ OUTPUT_VIDEO = None  # Defaults to <image_directory>/<name>_<multiplier>.mp4 whe
 FFMPEG_PATH = r"C:\\Program Files\\ffmpeg-2025-02-24-git-6232f416b1-full_build\\bin\\ffmpeg.exe"  # Or just 'ffmpeg'
 VIDEO_DURATION = 10.0  # seconds
 VIDEO_FRAME_RATE = 30.0  # Optional constant frame rate; set to 0 to use per-frame durations
+UNIFORM_FRAME_DURATION = False
 PIXEL_FORMAT = 'yuv420p'
 FFMPEG_EXTRA_ARGS = []  # Additional ffmpeg arguments, e.g. ['-vf', 'scale=ceil(iw/2)*2:ceil(ih/2)*2']
 SOURCE_PATTERN = '*.ibw'
@@ -93,7 +94,8 @@ def collect_frame_times(image_paths, source_directory, pattern, logger):
     return frame_times
 
 
-def compute_frame_schedule(capture_times, frame_count, video_duration):
+def compute_frame_schedule(capture_times, frame_count, video_duration,
+                           force_uniform=False):
     if frame_count <= 0:
         return [], 1.0, 0.0
 
@@ -127,6 +129,9 @@ def compute_frame_schedule(capture_times, frame_count, video_duration):
     fallback = video_duration / float(frame_count)
     if fallback <= 0:
         fallback = 0.1
+
+    if force_uniform:
+        return [fallback] * frame_count, (multiplier if multiplier > 0 else 1.0), actual_span
 
     intervals = []
     for index in range(frame_count - 1):
@@ -213,6 +218,11 @@ def build_parser():
     parser.add_argument('--video-fps', dest='video_fps', type=float,
                         default=VIDEO_FRAME_RATE,
                         help='Constant playback rate in fps (default: %(default)s). Use 0 to rely on per-frame durations.')
+    parser.add_argument('--uniform-frame-duration', dest='uniform_frame_duration', action='store_true',
+                        default=UNIFORM_FRAME_DURATION,
+                        help='Display each frame for the same duration regardless of capture timing.')
+    parser.add_argument('--capture-frame-duration', dest='uniform_frame_duration', action='store_false',
+                        help='Derive frame timing from capture timestamps (default).')
     parser.add_argument('--pixel-format', dest='pixel_format', default=PIXEL_FORMAT,
                         help='Pixel format for ffmpeg output (default: %(default)s).')
     parser.add_argument('--extra-arg', dest='extra_args', action='append', default=None,
@@ -311,7 +321,11 @@ def main(argv=None):
     source_directory = args.source_directory or os.path.dirname(image_directory) or image_directory
     source_directory = os.path.abspath(source_directory)
     if not os.path.isdir(source_directory):
-        logger.warning('Source directory %s not found; using uniform frame durations.', source_directory)
+        message = 'Source directory %s not found; using uniform frame durations.'
+        if args.uniform_frame_duration:
+            logger.info(message, source_directory)
+        else:
+            logger.warning(message, source_directory)
         capture_times = [None] * len(images)
     else:
         capture_times = collect_frame_times(images, source_directory, SOURCE_PATTERN, logger)
@@ -320,6 +334,7 @@ def main(argv=None):
         capture_times,
         len(images),
         video_duration,
+        force_uniform=args.uniform_frame_duration,
     )
 
     multiplier_label = format_time_multiplier(multiplier)
@@ -359,6 +374,7 @@ def main(argv=None):
         extra_args=extra_args,
         stabilization=stabilization,
         frame_rate=frame_rate,
+        uniform_frame_duration=args.uniform_frame_duration,
     )
 
     logger.info('Capture span: %.2f seconds', actual_span)

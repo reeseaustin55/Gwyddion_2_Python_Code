@@ -804,6 +804,7 @@ class GwyddionBatchProcessor(object):
             frame_count,
             target_duration,
             time_multiplier,
+            uniform=settings.uniform_frame_duration,
         )
 
         video_path = config.get_video_output_path(
@@ -851,13 +852,17 @@ class GwyddionBatchProcessor(object):
         return float(last - first)
 
     def _build_frame_durations(self, capture_times, frame_count,
-                               target_duration, time_multiplier):
+                               target_duration, time_multiplier,
+                               uniform=False):
         if frame_count <= 0:
             return []
 
         fallback = target_duration / float(frame_count)
         if fallback <= 0:
             fallback = 0.1
+
+        if uniform:
+            return [fallback] * frame_count
 
         if not capture_times:
             return [fallback] * frame_count

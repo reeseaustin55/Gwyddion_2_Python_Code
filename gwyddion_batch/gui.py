@@ -96,6 +96,7 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
                 'enabled': bool(self.video_enabled_var.get()),
                 'duration': self.video_duration_var.get(),
                 'split_scans': bool(self.video_split_var.get()),
+                'uniform_frame_duration': bool(self.video_uniform_var.get()),
                 'stabilization': {
                     'enabled': bool(self.stabilize_var.get()),
                     'shakiness': self.shakiness_var.get(),
@@ -153,6 +154,8 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
         self.video_enabled_var = tk.IntVar(value=1 if video_defaults.get('enabled') else 0)
         self.video_duration_var = tk.StringVar(value=str(video_defaults.get('duration', '10')))
         self.video_split_var = tk.IntVar(value=1 if video_defaults.get('split_scans') else 0)
+        self.video_uniform_var = tk.IntVar(
+            value=1 if video_defaults.get('uniform_frame_duration') else 0)
 
         stabilization_defaults = video_defaults.get('stabilization', {})
         self.stabilize_var = tk.IntVar(value=1 if stabilization_defaults.get('enabled') else 0)
@@ -277,12 +280,19 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
             1,
             entry_list=self._video_entries,
         )
+        uniform_cb = tk.Checkbutton(
+            video_frame,
+            text='Display each frame for the same duration',
+            variable=self.video_uniform_var,
+        )
+        uniform_cb.grid(row=2, column=0, columnspan=3, sticky='w')
+        self._video_checkbuttons.append(uniform_cb)
         split_cb = tk.Checkbutton(
             video_frame,
             text='Split UP/DOWN scans',
             variable=self.video_split_var,
         )
-        split_cb.grid(row=2, column=0, columnspan=3, sticky='w')
+        split_cb.grid(row=3, column=0, columnspan=3, sticky='w')
         self._video_checkbuttons.append(split_cb)
 
         row += 1
@@ -469,6 +479,7 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
             raise ValueError('Video duration must be greater than zero when video stitching is enabled.')
         frame_rate = None
         split_scans = bool(self.video_split_var.get()) if video_enabled else False
+        uniform_frame_duration = bool(self.video_uniform_var.get()) if video_enabled else False
 
         stabilization_enabled = video_enabled and bool(self.stabilize_var.get())
         stabilization = StabilizationSettings(
@@ -492,6 +503,7 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
             duration_seconds=video_duration,
             stabilization=stabilization,
             split_scans=split_scans,
+            uniform_frame_duration=uniform_frame_duration,
         )
 
         try:

@@ -31,6 +31,8 @@ FFMPEG_PATH = r"C:\\Program Files\\ffmpeg-2025-02-24-git-6232f416b1-full_build\\
 VIDEO_DURATION = 10.0  # seconds
 # When enabled, render separate UP/DOWN videos using alternating frames
 VIDEO_SPLIT_SCANS = False
+# Set to True to ignore capture timestamps and display each frame for the same duration
+VIDEO_UNIFORM_FRAME_DURATION = False
 # Pixel format is fixed to yuv420p by default in the helper
 # Additional ffmpeg arguments can be provided via the API if needed
 # Stabilization settings ----------------------------------------------------
@@ -75,6 +77,7 @@ def main():
         stabilization=stabilization_settings,
         frame_rate=None,
         split_scans=VIDEO_SPLIT_SCANS,
+        uniform_frame_duration=VIDEO_UNIFORM_FRAME_DURATION,
     )
 
     processing_options = ProcessingOptions(

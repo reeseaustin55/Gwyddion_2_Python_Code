@@ -54,7 +54,7 @@ class VideoSettings(object):
     def __init__(self, enabled=False, output_path=None, ffmpeg_path='ffmpeg',
                  duration_seconds=None, pixel_format='yuv420p',
                  extra_args=None, stabilization=None, frame_rate=None,
-                 split_scans=False):
+                 split_scans=False, uniform_frame_duration=False):
         self.enabled = bool(enabled)
         self.output_path = output_path
         self.ffmpeg_path = ffmpeg_path or 'ffmpeg'
@@ -74,6 +74,7 @@ class VideoSettings(object):
             rate_value = None
         self.frame_rate = rate_value
         self.split_scans = bool(split_scans)
+        self.uniform_frame_duration = bool(uniform_frame_duration)
 
 
 def format_time_multiplier(multiplier):
