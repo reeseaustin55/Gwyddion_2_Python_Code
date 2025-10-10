@@ -1,1 +1,23 @@
-temp
+Gwyddion 2 sfunctions helpers
+=============================
+
+This repository provides helper utilities and UI widgets for running Gwyddion's
+`sfunctions` module from Python.  It exposes GTK+ controls that match the
+statistics tab options, including generation of 2D PSDF images with a selectable
+zoom factor and Angular Spectrum outputs.
+
+Package contents
+----------------
+
+* ``SFunctionsOptions`` – container capturing the user's processing choices.
+* ``SFunctionsOptionsPane`` – GTK widget presenting the available toggles and
+  zoom factor spinner.
+* ``process_containers`` – convenience routine that applies the selected
+  processing to one or more ``gwy.GwyContainer`` instances.
+* ``run_psdf_image`` / ``run_psdf2d`` – helpers that trigger the ``sfunctions``
+  module for the respective outputs.
+* ``run_angular_spectrum`` – helper that configures and runs the Angular
+  Spectrum calculation and returns the resulting ``gwy.GwyDataLine``.
+
+The helpers rely on the ``gwy`` bindings being available in the runtime
+environment alongside GTK+ 3.
