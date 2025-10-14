@@ -1,1 +1,37 @@
-temp
+# Gwyddion Python Processing Tools
+
+This repository contains a lightweight processing pipeline for working with
+Gwyddion surface data. The tooling focuses on three key areas:
+
+* Precise ordering of alignment, scaling, and scar removal operations.
+* Export of two-dimensional Power Spectral Density Function (PSDF) artefacts,
+  including the angular spectrum statistics.
+* Video generation with optional frame stabilisation controlled through a
+  single displacement percentage parameter.
+
+## Installation
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+## Command Line Usage
+
+```bash
+python -m gwyddion_pipeline path/to/surface.npy \
+  --remove-scars \
+  --scale 1.5 \
+  --psdf --angular-spectrum \
+  --frames frame1.png frame2.png frame3.png \
+  --stabilize --max-displacement 7.5
+```
+
+The command above processes the provided surface, generates PSDF artefacts, and
+exports a stabilised video using the supplied image sequence. The
+``--max-displacement`` argument is the only required stabilisation parameter and
+represents the maximum expected motion between frames as a percentage of the
+frame width.
+
+All artefacts are written to the ``outputs`` directory by default.
