@@ -94,11 +94,8 @@ def build_arg_parser():
                         help='Generate and export a 2D PSDF image for each processed channel.')
     parser.add_argument('--no-psdf', dest='generate_psdf', action='store_false',
                         help='Disable PSDF export (default).')
-    parser.add_argument('--angular-spectrum', dest='generate_angular_spectrum', action='store_true',
-                        default=False,
-                        help='Generate and export an angular spectrum image for each processed channel.')
-    parser.add_argument('--no-angular-spectrum', dest='generate_angular_spectrum', action='store_false',
-                        help='Disable angular spectrum export (default).')
+    parser.add_argument('--psdf-zoom', dest='psdf_zoom', type=float, default=4.0,
+                        help='Zoom factor used when generating PSDF images (default: 4).')
     parser.set_defaults(
         flatten=True,
         align_rows=True,
@@ -107,7 +104,7 @@ def build_arg_parser():
         export_stats=False,
         generate_acf=False,
         generate_psdf=False,
-        generate_angular_spectrum=False,
+        psdf_zoom=4.0,
     )
     return parser
 
@@ -156,7 +153,7 @@ def main(argv=None):
             export_stats=args.export_stats,
             generate_acf=args.generate_acf,
             generate_psdf=args.generate_psdf,
-            generate_angular_spectrum=args.generate_angular_spectrum,
+            psdf_zoom=args.psdf_zoom,
         )
         config = BatchConfig(
             folder_path=args.folder,

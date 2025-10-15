@@ -102,8 +102,9 @@ its own nested directory (``channel0``, ``channel1`` and so on) and, when ACF
 generation is enabled, the autocorrelation images for that channel are grouped
 under an ``acf`` subfolder.  Filenames still include the channel number so
 multiple channels can be exported from the same source file without collisions.
-Additional toggles export PSDF and angular spectrum imagery to sibling
-``psdf`` and ``angular_spectrum`` folders for convenient discovery.
+An additional toggle exports PSDF imagery to a sibling ``psdf`` folder with a
+configurable zoom factor (default ``4×``) so the generated view matches the
+interactive Gwyddion workflow.
 
 When video rendering is enabled the tool invokes `ffmpeg` using a concat file
 similar to the batch scripts provided previously.  The time span between the

@@ -13,7 +13,7 @@ class ProcessingOptions(object):
                  align_method='polynomial', align_degree=2,
                  remove_scars=False, fix_zero=True,
                  export_stats=False, generate_acf=False,
-                 generate_psdf=False, generate_angular_spectrum=False):
+                 generate_psdf=False, psdf_zoom=4.0):
         self.flatten = bool(flatten)
         self.align_rows = bool(align_rows)
         method = (align_method or 'polynomial').lower()
@@ -32,7 +32,13 @@ class ProcessingOptions(object):
         self.export_stats = bool(export_stats)
         self.generate_acf = bool(generate_acf)
         self.generate_psdf = bool(generate_psdf)
-        self.generate_angular_spectrum = bool(generate_angular_spectrum)
+        try:
+            zoom_value = float(psdf_zoom)
+        except Exception:
+            zoom_value = 4.0
+        if zoom_value <= 0:
+            zoom_value = 4.0
+        self.psdf_zoom = zoom_value
 
 
 class StabilizationSettings(object):

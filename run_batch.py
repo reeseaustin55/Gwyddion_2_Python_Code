@@ -48,7 +48,7 @@ FIX_ZERO = True
 EXPORT_STATS = False
 GENERATE_ACF = False
 GENERATE_PSDF = False
-GENERATE_ANGULAR_SPECTRUM = False
+PSDF_ZOOM = 4.0
 # ---------------------------------------------------------------------------
 
 
@@ -80,7 +80,7 @@ def main():
         export_stats=EXPORT_STATS,
         generate_acf=GENERATE_ACF,
         generate_psdf=GENERATE_PSDF,
-        generate_angular_spectrum=GENERATE_ANGULAR_SPECTRUM,
+        psdf_zoom=PSDF_ZOOM,
     )
 
     config = BatchConfig(

@@ -112,7 +112,7 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
                 'export_stats': bool(self.stats_var.get()),
                 'generate_acf': bool(self.acf_var.get()),
                 'generate_psdf': bool(self.psdf_var.get()),
-                'generate_angular_spectrum': bool(self.angular_var.get()),
+                'psdf_zoom': self.psdf_zoom_var.get(),
             },
         }
         try:
@@ -169,8 +169,8 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
         self.stats_var = tk.IntVar(value=1 if processing_defaults.get('export_stats') else 0)
         self.acf_var = tk.IntVar(value=1 if processing_defaults.get('generate_acf') else 0)
         self.psdf_var = tk.IntVar(value=1 if processing_defaults.get('generate_psdf') else 0)
-        self.angular_var = tk.IntVar(
-            value=1 if processing_defaults.get('generate_angular_spectrum') else 0)
+        psdf_zoom_default = processing_defaults.get('psdf_zoom', '4.0')
+        self.psdf_zoom_var = tk.StringVar(value=str(psdf_zoom_default))
 
     def _build_ui(self):
         main = tk.Frame(self.root)
@@ -255,19 +255,18 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
         acf_cb = tk.Checkbutton(processing_frame, text='Generate ACF image', variable=self.acf_var)
         acf_cb.grid(row=6, column=0, columnspan=3, sticky='w')
 
+        psdf_frame = tk.Frame(processing_frame)
+        psdf_frame.grid(row=7, column=0, columnspan=3, sticky='w')
         psdf_cb = tk.Checkbutton(
-            processing_frame,
+            psdf_frame,
             text='Generate 2D PSDF image',
             variable=self.psdf_var,
         )
-        psdf_cb.grid(row=7, column=0, columnspan=3, sticky='w')
-
-        angular_cb = tk.Checkbutton(
-            processing_frame,
-            text='Generate angular spectrum image',
-            variable=self.angular_var,
-        )
-        angular_cb.grid(row=8, column=0, columnspan=3, sticky='w')
+        psdf_cb.pack(side='left')
+        psdf_zoom_label = tk.Label(psdf_frame, text='Zoom:')
+        psdf_zoom_label.pack(side='left', padx=(10, 2))
+        psdf_zoom_entry = tk.Entry(psdf_frame, textvariable=self.psdf_zoom_var, width=6)
+        psdf_zoom_entry.pack(side='left')
 
         row += 1
 
@@ -503,6 +502,9 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
             align_degree = int(self.align_degree_var.get())
         except Exception:
             align_degree = 2
+        psdf_zoom = self._parse_float(self.psdf_zoom_var.get())
+        if psdf_zoom is None or psdf_zoom <= 0:
+            psdf_zoom = 4.0
         processing_options = ProcessingOptions(
             flatten=bool(self.flatten_var.get()),
             align_rows=bool(self.align_rows_var.get()),
@@ -513,7 +515,7 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
             export_stats=bool(self.stats_var.get()),
             generate_acf=bool(self.acf_var.get()),
             generate_psdf=bool(self.psdf_var.get()),
-            generate_angular_spectrum=bool(self.angular_var.get()),
+            psdf_zoom=psdf_zoom,
         )
 
         config = BatchConfig(

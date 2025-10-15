@@ -107,7 +107,6 @@ class GwyddionBatchProcessor(object):
             output_paths = []
             acf_paths = []
             psdf_paths = []
-            angular_paths = []
             capture_times = []
             channel_output_directory = config.ensure_channel_directory(channel_number)
             if processing_options and getattr(processing_options, 'generate_acf', False):
@@ -138,9 +137,6 @@ class GwyddionBatchProcessor(object):
                     psdf_path = result.get('psdf_path')
                     if psdf_path:
                         psdf_paths.append(psdf_path)
-                    angular_path = result.get('angular_path')
-                    if angular_path:
-                        angular_paths.append(angular_path)
                     capture_times.append(file_times.get(path))
 
             self.logger.info('Channel %d complete: %d/%d files succeeded',
@@ -151,7 +147,6 @@ class GwyddionBatchProcessor(object):
                 'output_paths': output_paths,
                 'acf_paths': acf_paths,
                 'psdf_paths': psdf_paths,
-                'angular_paths': angular_paths,
             }
             overall_processed += successes
 
@@ -272,21 +267,13 @@ class GwyddionBatchProcessor(object):
                 settings,
                 output_path,
                 scaled_channel,
-            )
-        angular_path = None
-        if getattr(options, 'generate_angular_spectrum', False):
-            angular_path = self._generate_angular_spectrum_image(
-                container,
-                settings,
-                output_path,
-                scaled_channel,
+                options,
             )
         return {
             'image_path': output_path,
             'acf_path': acf_path,
             'stats_path': stats_path,
             'psdf_path': psdf_path,
-            'angular_path': angular_path,
         }
 
     def _run_process_function(self, container, func_name, description=None,
@@ -698,7 +685,25 @@ class GwyddionBatchProcessor(object):
             self.logger.debug('ACF generation error details', exc_info=True)
             return None
 
-    def _generate_psdf_image(self, container, settings, output_path, scaled_channel_id):
+    def _generate_psdf_image(self, container, settings, output_path,
+                             scaled_channel_id, options):
+        zoom_value = getattr(options, 'psdf_zoom', 4.0)
+        try:
+            zoom = float(zoom_value)
+        except Exception:
+            zoom = 4.0
+        if zoom <= 0:
+            zoom = 4.0
+        for key in ('/module/psdf/zoom', '/module/psdf2d/zoom'):
+            try:
+                settings.set_double_by_name(key, zoom)
+                continue
+            except Exception:
+                pass
+            try:
+                settings.set_int32_by_name(key, int(round(zoom)))
+            except Exception:
+                continue
         return self._generate_derived_image(
             container,
             settings,
@@ -710,24 +715,6 @@ class GwyddionBatchProcessor(object):
             file_label='PSDF image',
             function_names=['psdf', 'psdf2d'],
             settings_paths=['/module/psdf/create_image'],
-        )
-
-    def _generate_angular_spectrum_image(self, container, settings, output_path, scaled_channel_id):
-        return self._generate_derived_image(
-            container,
-            settings,
-            output_path,
-            scaled_channel_id,
-            directory_name='angular_spectrum',
-            suffix='_angular.png',
-            description='Angular spectrum generation',
-            file_label='angular spectrum image',
-            function_names=['psdf_angular', 'angular_psdf', 'angular_spectrum'],
-            settings_paths=[
-                '/module/psdf_angular/create_image',
-                '/module/angular_psdf/create_image',
-                '/module/angular_spectrum/create_image',
-            ],
         )
 
     def _generate_derived_image(self, container, settings, output_path, scaled_channel_id,
