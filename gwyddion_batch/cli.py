@@ -44,9 +44,13 @@ def build_arg_parser():
     parser.add_argument('--pixel-format', dest='pixel_format', default='yuv420p',
                         help='Pixel format for ffmpeg output (default: yuv420p).')
     parser.add_argument('--stabilize', dest='stabilize', action='store_true',
-                        help='Enable drift correction and cropping when rendering the video.')
+                        help='Enable drift correction when rendering the video.')
     parser.add_argument('--no-stabilize', dest='stabilize', action='store_false',
                         help='Disable video stabilization (default).')
+    parser.add_argument('--stabilize-max-percent', dest='stabilize_percent', type=float,
+                        default=5.0,
+                        help=('Maximum percentage of the frame width that a frame may drift between '
+                              'captures (default: 5).'))
     parser.add_argument('--split-scans', dest='split_scans', action='store_true', default=False,
                         help='Render separate videos for alternating frames (UP/DOWN scans).')
     parser.add_argument('--no-split-scans', dest='split_scans', action='store_false',
@@ -57,10 +61,6 @@ def build_arg_parser():
     parser.add_argument('--capture-frame-duration', dest='uniform_frame_duration',
                         action='store_false',
                         help='Derive frame durations from capture timestamps (default).')
-    parser.add_argument('--no-crop-shared', dest='stabilize_crop', action='store_false', default=True,
-                        help='Skip cropping the stabilized video to the shared frame area.')
-    parser.add_argument('--crop-shared', dest='stabilize_crop', action='store_true',
-                        help='Crop the stabilized video to the shared frame area (default).')
     parser.set_defaults(stabilize=False)
     parser.add_argument('--no-flatten', dest='flatten', action='store_false', default=True,
                         help='Disable the flattening (level) step.')
@@ -90,6 +90,15 @@ def build_arg_parser():
                         help='Generate and export an autocorrelation image for each processed channel.')
     parser.add_argument('--no-acf', dest='generate_acf', action='store_false',
                         help='Disable autocorrelation export (default).')
+    parser.add_argument('--psdf', dest='generate_psdf', action='store_true', default=False,
+                        help='Generate and export a 2D PSDF image for each processed channel.')
+    parser.add_argument('--no-psdf', dest='generate_psdf', action='store_false',
+                        help='Disable PSDF export (default).')
+    parser.add_argument('--angular-spectrum', dest='generate_angular_spectrum', action='store_true',
+                        default=False,
+                        help='Generate and export an angular spectrum image for each processed channel.')
+    parser.add_argument('--no-angular-spectrum', dest='generate_angular_spectrum', action='store_false',
+                        help='Disable angular spectrum export (default).')
     parser.set_defaults(
         flatten=True,
         align_rows=True,
@@ -97,6 +106,8 @@ def build_arg_parser():
         fix_zero=True,
         export_stats=False,
         generate_acf=False,
+        generate_psdf=False,
+        generate_angular_spectrum=False,
     )
     return parser
 
@@ -120,13 +131,7 @@ def main(argv=None):
             file_filter = None
         stabilization_settings = StabilizationSettings(
             enabled=args.stabilize,
-            shakiness=5,
-            accuracy=9,
-            stepsize=6,
-            mincontrast=0.3,
-            smoothing=15,
-            tripod=True,
-            crop_shared_area=args.stabilize_crop,
+            max_displacement_percent=args.stabilize_percent,
         )
         video_duration = args.video_duration if args.video else None
         video_frame_rate = args.video_fps if (args.video and args.video_fps is not None) else None
@@ -150,6 +155,8 @@ def main(argv=None):
             fix_zero=args.fix_zero,
             export_stats=args.export_stats,
             generate_acf=args.generate_acf,
+            generate_psdf=args.generate_psdf,
+            generate_angular_spectrum=args.generate_angular_spectrum,
         )
         config = BatchConfig(
             folder_path=args.folder,

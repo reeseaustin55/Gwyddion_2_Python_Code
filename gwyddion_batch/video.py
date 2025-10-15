@@ -50,6 +50,19 @@ def _contains_filter(extra_args):
     return False
 
 
+def _calculate_max_shift_pixels(stabilization, frame_width):
+    """Return the maximum drift in pixels based on ``stabilization`` settings."""
+    if not stabilization or frame_width is None:
+        return None
+    try:
+        percent = float(getattr(stabilization, 'max_displacement_percent', 0.0))
+    except Exception:
+        percent = 0.0
+    if percent <= 0:
+        return None
+    return max(0.0, (percent / 100.0) * float(frame_width))
+
+
 def _calculate_repeat_counts(durations, frame_count, default_duration, frame_rate):
     """Return repeat counts per frame to approximate ``durations`` at ``frame_rate``."""
     if frame_count <= 0:
@@ -156,14 +169,20 @@ def _parse_transforms(path):
     return dxs, dys
 
 
-def _compute_crop_region(dxs, dys, width, height):
+def _compute_crop_region(dxs, dys, width, height, max_shift=None):
     """Compute crop rectangle ensuring overlap between frames."""
     if not dxs or not dys:
         return None
-    min_right = min(dx + float(width) for dx in dxs)
-    min_bottom = min(dy + float(height) for dy in dys)
-    max_left = max(max(dx, 0.0) for dx in dxs)
-    max_top = max(max(dy, 0.0) for dy in dys)
+    if max_shift is not None and max_shift > 0:
+        limited_dxs = [max(-max_shift, min(max_shift, value)) for value in dxs]
+        limited_dys = [max(-max_shift, min(max_shift, value)) for value in dys]
+    else:
+        limited_dxs = dxs
+        limited_dys = dys
+    min_right = min(dx + float(width) for dx in limited_dxs)
+    min_bottom = min(dy + float(height) for dy in limited_dys)
+    max_left = max(max(dx, 0.0) for dx in limited_dxs)
+    max_top = max(max(dy, 0.0) for dy in limited_dys)
     crop_width = int(math.floor(min_right) - int(math.ceil(max_left)))
     crop_height = int(math.floor(min_bottom) - int(math.ceil(max_top)))
     if crop_width <= 0 or crop_height <= 0:
@@ -189,31 +208,29 @@ def _compute_crop_region(dxs, dys, width, height):
     return crop_x, crop_y, crop_width, crop_height
 
 
-def _build_detect_filter(stabilization, transform_path):
+def _build_detect_filter(transform_path):
     parts = [
         'vidstabdetect',
         'result=%s' % _escape_path(_ensure_text(transform_path)),
-        'shakiness=%d' % stabilization.shakiness,
-        'accuracy=%d' % stabilization.accuracy,
-        'stepsize=%d' % stabilization.stepsize,
-        'mincontrast=%.6f' % stabilization.mincontrast,
+        'shakiness=5',
+        'accuracy=9',
+        'stepsize=6',
+        'mincontrast=0.3',
     ]
-    if stabilization.tripod:
-        parts.append('tripod=1')
     return ':'.join(parts)
 
 
-def _build_transform_filter(stabilization, transform_path):
+def _build_transform_filter(transform_path, max_shift=None):
     parts = [
         'vidstabtransform',
         'input=%s' % _escape_path(_ensure_text(transform_path)),
-        'smoothing=%d' % stabilization.smoothing,
+        'smoothing=15',
         'optzoom=0',
         'zoom=0',
         'interpol=bicubic',
     ]
-    if stabilization.tripod:
-        parts.append('tripod=1')
+    if max_shift is not None and max_shift > 0:
+        parts.append('maxshift=%d' % int(round(max_shift)))
     return ':'.join(parts)
 
 
@@ -235,6 +252,8 @@ def stitch_images_to_video(image_paths, output_path, ffmpeg_path='ffmpeg',
     list_path = None
     transform_path = None
     ensure_even_filter = None
+    width = None
+    height = None
     try:
         first_path = image_paths[0]
         width, height = _probe_png_size(first_path)
@@ -332,39 +351,48 @@ def stitch_images_to_video(image_paths, output_path, ffmpeg_path='ffmpeg',
             transform_handle, transform_path = tempfile.mkstemp(prefix='gwyddion_transforms_', suffix='.trf')
             os.close(transform_handle)
 
-            detect_filter = _build_detect_filter(stabilization, transform_path)
-            detect_cmd = [
-                to_native_path(ffmpeg_path),
-                '-y',
-                '-f', 'concat',
-                '-safe', '0',
-                '-i', to_native_path(list_path),
-                '-vf', detect_filter,
-                '-f', 'null',
-                '-',
-            ]
-            if logger:
-                logger.info('Analyzing frame drift for stabilization')
-            subprocess.check_call(detect_cmd)
-
-            if stabilization.crop_shared_area:
-                try:
-                    width, height = _probe_png_size(image_paths[0])
-                    dxs, dys = _parse_transforms(transform_path)
-                    crop_rect = _compute_crop_region(dxs, dys, width, height)
-                except Exception as exc:
-                    crop_rect = None
-                    if logger:
-                        logger.warning('Unable to compute crop region: %s', exc)
-            else:
-                crop_rect = None
-
-            filters.append(_build_transform_filter(stabilization, transform_path))
-            if crop_rect:
-                crop_x, crop_y, crop_w, crop_h = crop_rect
+            try:
+                detect_filter = _build_detect_filter(transform_path)
+                detect_cmd = [
+                    to_native_path(ffmpeg_path),
+                    '-y',
+                    '-f', 'concat',
+                    '-safe', '0',
+                    '-i', to_native_path(list_path),
+                    '-vf', detect_filter,
+                    '-f', 'null',
+                    '-',
+                ]
                 if logger:
-                    logger.info('Cropping stabilized video to %dx%d at %d,%d', crop_w, crop_h, crop_x, crop_y)
-                filters.append('crop=%d:%d:%d:%d' % (crop_w, crop_h, crop_x, crop_y))
+                    logger.info('Analyzing frame drift for stabilization')
+                subprocess.check_call(detect_cmd)
+
+                max_shift_px = _calculate_max_shift_pixels(stabilization, width)
+                crop_rect = None
+                if width is not None and height is not None:
+                    try:
+                        dxs, dys = _parse_transforms(transform_path)
+                        crop_rect = _compute_crop_region(dxs, dys, width, height, max_shift=max_shift_px)
+                    except Exception as exc:
+                        crop_rect = None
+                        if logger:
+                            logger.warning('Unable to compute crop region: %s', exc)
+
+                filters.append(_build_transform_filter(transform_path, max_shift=max_shift_px))
+                if crop_rect:
+                    crop_x, crop_y, crop_w, crop_h = crop_rect
+                    if logger:
+                        logger.info('Cropping stabilized video to %dx%d at %d,%d', crop_w, crop_h, crop_x, crop_y)
+                    filters.append('crop=%d:%d:%d:%d' % (crop_w, crop_h, crop_x, crop_y))
+            except Exception as exc:
+                if logger:
+                    logger.warning('Stabilization failed (%s); continuing without stabilization.', exc)
+                if transform_path and os.path.exists(transform_path):
+                    try:
+                        os.remove(transform_path)
+                    except OSError:
+                        pass
+                transform_path = None
 
         if ensure_even_filter:
             filters.append(ensure_even_filter)

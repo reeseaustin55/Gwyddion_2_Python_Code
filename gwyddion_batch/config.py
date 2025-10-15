@@ -12,7 +12,8 @@ class ProcessingOptions(object):
     def __init__(self, flatten=True, align_rows=True,
                  align_method='polynomial', align_degree=2,
                  remove_scars=False, fix_zero=True,
-                 export_stats=False, generate_acf=False):
+                 export_stats=False, generate_acf=False,
+                 generate_psdf=False, generate_angular_spectrum=False):
         self.flatten = bool(flatten)
         self.align_rows = bool(align_rows)
         method = (align_method or 'polynomial').lower()
@@ -30,22 +31,24 @@ class ProcessingOptions(object):
         self.fix_zero = bool(fix_zero)
         self.export_stats = bool(export_stats)
         self.generate_acf = bool(generate_acf)
+        self.generate_psdf = bool(generate_psdf)
+        self.generate_angular_spectrum = bool(generate_angular_spectrum)
 
 
 class StabilizationSettings(object):
     """Settings controlling optional video stabilization."""
 
-    def __init__(self, enabled=False, shakiness=5, accuracy=9, stepsize=6,
-                 mincontrast=0.3, smoothing=15, tripod=True,
-                 crop_shared_area=True):
+    def __init__(self, enabled=False, max_displacement_percent=5.0, **kwargs):
+        # ``kwargs`` captures legacy parameters from persisted settings or CLI
+        # flags so that older configurations continue to load without error.
         self.enabled = bool(enabled)
-        self.shakiness = int(shakiness) if shakiness is not None else 5
-        self.accuracy = int(accuracy) if accuracy is not None else 9
-        self.stepsize = int(stepsize) if stepsize is not None else 6
-        self.mincontrast = float(mincontrast) if mincontrast is not None else 0.3
-        self.smoothing = int(smoothing) if smoothing is not None else 15
-        self.tripod = bool(tripod)
-        self.crop_shared_area = bool(crop_shared_area)
+        try:
+            value = float(max_displacement_percent)
+        except Exception:
+            value = 5.0
+        if value < 0:
+            value = 0.0
+        self.max_displacement_percent = value
 
 
 class VideoSettings(object):

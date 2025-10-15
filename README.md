@@ -102,6 +102,8 @@ its own nested directory (``channel0``, ``channel1`` and so on) and, when ACF
 generation is enabled, the autocorrelation images for that channel are grouped
 under an ``acf`` subfolder.  Filenames still include the channel number so
 multiple channels can be exported from the same source file without collisions.
+Additional toggles export PSDF and angular spectrum imagery to sibling
+``psdf`` and ``angular_spectrum`` folders for convenient discovery.
 
 When video rendering is enabled the tool invokes `ffmpeg` using a concat file
 similar to the batch scripts provided previously.  The time span between the
@@ -121,9 +123,10 @@ and any ACF imagery.
 Enable the new stabilization option to perform a two-pass `ffmpeg` run using
 ``vidstab`` filters.  The detection pass measures per-frame drift, the
 transformation pass applies the correction, and the output is cropped to the
-shared image area to avoid edge artifacts.  CLI flags (``--stabilize``,
-``--stabilize-shakiness`` and friends) map directly to the constants exposed in
-`run_batch.py` and `render_video.py`.
+shared image area to avoid edge artifacts.  The CLI now pairs ``--stabilize``
+with a single ``--stabilize-max-percent`` flag (mirrored in the GUI) to specify
+the maximum frame-to-frame displacement as a percentage of the frame width;
+internal defaults handle the other filter parameters.
 
 When statistics export is enabled the processor calls Gwyddion's own statistical
 quantities module and writes the complete set of reported values (Sa, Sq, hybrid
@@ -157,7 +160,7 @@ the per-frame durations to fit the requested video length, and, by default,
 duplicates frames to play back at 30 fps.  Supplying `--video-fps 0` switches to
 pure duration-driven playback, while any other explicit value replaces the
 default rate.  Command line flags let you override the glob pattern, ffmpeg
-path, stabilization parameters, source data folder, frame rate, and output
+path, stabilization drift allowance, source data folder, frame rate, and output
 filename as needed:
 
 ```bash

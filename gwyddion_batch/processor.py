@@ -106,6 +106,8 @@ class GwyddionBatchProcessor(object):
             successes = 0
             output_paths = []
             acf_paths = []
+            psdf_paths = []
+            angular_paths = []
             capture_times = []
             channel_output_directory = config.ensure_channel_directory(channel_number)
             if processing_options and getattr(processing_options, 'generate_acf', False):
@@ -133,6 +135,12 @@ class GwyddionBatchProcessor(object):
                     acf_path = result.get('acf_path')
                     if acf_path:
                         acf_paths.append(acf_path)
+                    psdf_path = result.get('psdf_path')
+                    if psdf_path:
+                        psdf_paths.append(psdf_path)
+                    angular_path = result.get('angular_path')
+                    if angular_path:
+                        angular_paths.append(angular_path)
                     capture_times.append(file_times.get(path))
 
             self.logger.info('Channel %d complete: %d/%d files succeeded',
@@ -142,6 +150,8 @@ class GwyddionBatchProcessor(object):
                 'total': len(files),
                 'output_paths': output_paths,
                 'acf_paths': acf_paths,
+                'psdf_paths': psdf_paths,
+                'angular_paths': angular_paths,
             }
             overall_processed += successes
 
@@ -255,10 +265,28 @@ class GwyddionBatchProcessor(object):
                 scaled_channel,
                 acf_directory,
             )
+        psdf_path = None
+        if getattr(options, 'generate_psdf', False):
+            psdf_path = self._generate_psdf_image(
+                container,
+                settings,
+                output_path,
+                scaled_channel,
+            )
+        angular_path = None
+        if getattr(options, 'generate_angular_spectrum', False):
+            angular_path = self._generate_angular_spectrum_image(
+                container,
+                settings,
+                output_path,
+                scaled_channel,
+            )
         return {
             'image_path': output_path,
             'acf_path': acf_path,
             'stats_path': stats_path,
+            'psdf_path': psdf_path,
+            'angular_path': angular_path,
         }
 
     def _run_process_function(self, container, func_name, description=None,
@@ -314,18 +342,21 @@ class GwyddionBatchProcessor(object):
                 'level',
                 description='flattening',
             )
-        if options.align_rows:
+        if options.align_rows or options.remove_scars:
+            if options.align_rows:
+                self.logger.debug('Aligning rows before scaling')
+            else:
+                self.logger.debug('Aligning rows before scaling (required for scar removal)')
             self._run_align_rows(container, settings, options)
         if options.remove_scars:
-            self.logger.debug('Removing scars')
+            self.logger.debug('Removing scars before scaling')
             self._run_process_function(
                 container,
                 'remove_scars',
                 description='scar removal',
             )
-            if options.align_rows:
-                self.logger.debug('Re-aligning rows after scar removal')
-                self._run_align_rows(container, settings, options)
+            self.logger.debug('Re-aligning rows after scar removal (pre-scaling)')
+            self._run_align_rows(container, settings, options)
 
     def _apply_scaling(self, container, settings, pixel_count, xres, yres):
         gwy = self.gwy
@@ -351,8 +382,20 @@ class GwyddionBatchProcessor(object):
                 'level',
                 description='flattening',
             )
-        if options.align_rows:
-            self.logger.debug('Aligning rows on scaled data')
+        if options.align_rows or options.remove_scars:
+            if options.align_rows:
+                self.logger.debug('Aligning rows on scaled data')
+            else:
+                self.logger.debug('Aligning rows on scaled data (required for scar removal)')
+            self._run_align_rows(container, settings, options)
+        if options.remove_scars:
+            self.logger.debug('Removing scars after scaling')
+            self._run_process_function(
+                container,
+                'remove_scars',
+                description='scar removal',
+            )
+            self.logger.debug('Re-aligning rows after scar removal (post-scaling)')
             self._run_align_rows(container, settings, options)
         if options.fix_zero:
             data_field = gwy.gwy_app_data_browser_get_current(gwy.APP_DATA_FIELD)
@@ -653,6 +696,88 @@ class GwyddionBatchProcessor(object):
         except Exception as exc:
             self.logger.error('Failed to generate ACF for %s: %s', output_path, exc)
             self.logger.debug('ACF generation error details', exc_info=True)
+            return None
+
+    def _generate_psdf_image(self, container, settings, output_path, scaled_channel_id):
+        return self._generate_derived_image(
+            container,
+            settings,
+            output_path,
+            scaled_channel_id,
+            directory_name='psdf',
+            suffix='_psdf.png',
+            description='PSDF generation',
+            file_label='PSDF image',
+            function_names=['psdf', 'psdf2d'],
+            settings_paths=['/module/psdf/create_image'],
+        )
+
+    def _generate_angular_spectrum_image(self, container, settings, output_path, scaled_channel_id):
+        return self._generate_derived_image(
+            container,
+            settings,
+            output_path,
+            scaled_channel_id,
+            directory_name='angular_spectrum',
+            suffix='_angular.png',
+            description='Angular spectrum generation',
+            file_label='angular spectrum image',
+            function_names=['psdf_angular', 'angular_psdf', 'angular_spectrum'],
+            settings_paths=[
+                '/module/psdf_angular/create_image',
+                '/module/angular_psdf/create_image',
+                '/module/angular_spectrum/create_image',
+            ],
+        )
+
+    def _generate_derived_image(self, container, settings, output_path, scaled_channel_id,
+                                directory_name, suffix, description, file_label,
+                                function_names, settings_paths=None):
+        gwy = self.gwy
+        try:
+            for key in settings_paths or []:
+                try:
+                    settings.set_boolean_by_name(key, True)
+                    continue
+                except Exception:
+                    pass
+                try:
+                    settings.set_int32_by_name(key, 1)
+                except Exception:
+                    continue
+
+            ran = False
+            for func_name in function_names:
+                if not func_name:
+                    continue
+                if self._run_process_function(container, func_name, description=description):
+                    ran = True
+                    break
+            if not ran:
+                return None
+
+            data_ids = gwy.gwy_app_data_browser_get_data_ids(container)
+            if not data_ids:
+                return None
+            derived_channel = data_ids[-1]
+            gwy.gwy_app_data_browser_select_data_field(container, derived_channel)
+
+            base, file_name = os.path.split(output_path)
+            name, _ = os.path.splitext(file_name)
+            directory = os.path.join(base, directory_name)
+            if not os.path.isdir(directory):
+                os.makedirs(directory)
+            derived_path = os.path.join(directory, name + suffix)
+            self._save_container(container, derived_path, interactive=False)
+            self.logger.info('%s saved to %s', file_label, derived_path)
+            try:
+                gwy.gwy_app_data_browser_select_data_field(container, scaled_channel_id)
+            except Exception:
+                pass
+            return derived_path
+        except Exception as exc:
+            self.logger.error('Failed to generate %s for %s: %s', file_label, output_path, exc)
+            self.logger.debug('%s error details', description, exc_info=True)
             return None
 
     def _render_channel_videos(self, channel_number, output_paths, acf_paths,

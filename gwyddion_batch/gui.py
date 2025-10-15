@@ -99,13 +99,7 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
                 'uniform_frame_duration': bool(self.video_uniform_var.get()),
                 'stabilization': {
                     'enabled': bool(self.stabilize_var.get()),
-                    'shakiness': self.shakiness_var.get(),
-                    'accuracy': self.accuracy_var.get(),
-                    'stepsize': self.stepsize_var.get(),
-                    'mincontrast': self.mincontrast_var.get(),
-                    'smoothing': self.smoothing_var.get(),
-                    'tripod': bool(self.tripod_var.get()),
-                    'crop_shared_area': bool(self.crop_var.get()),
+                    'max_displacement_percent': self.stabilize_percent_var.get(),
                 },
             },
             'processing': {
@@ -117,6 +111,8 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
                 'fix_zero': bool(self.fix_zero_var.get()),
                 'export_stats': bool(self.stats_var.get()),
                 'generate_acf': bool(self.acf_var.get()),
+                'generate_psdf': bool(self.psdf_var.get()),
+                'generate_angular_spectrum': bool(self.angular_var.get()),
             },
         }
         try:
@@ -159,13 +155,8 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
 
         stabilization_defaults = video_defaults.get('stabilization', {})
         self.stabilize_var = tk.IntVar(value=1 if stabilization_defaults.get('enabled') else 0)
-        self.shakiness_var = tk.StringVar(value=str(stabilization_defaults.get('shakiness', '5')))
-        self.accuracy_var = tk.StringVar(value=str(stabilization_defaults.get('accuracy', '9')))
-        self.stepsize_var = tk.StringVar(value=str(stabilization_defaults.get('stepsize', '6')))
-        self.mincontrast_var = tk.StringVar(value=str(stabilization_defaults.get('mincontrast', '0.3')))
-        self.smoothing_var = tk.StringVar(value=str(stabilization_defaults.get('smoothing', '15')))
-        self.tripod_var = tk.IntVar(value=1 if stabilization_defaults.get('tripod', True) else 0)
-        self.crop_var = tk.IntVar(value=1 if stabilization_defaults.get('crop_shared_area', True) else 0)
+        percent_default = stabilization_defaults.get('max_displacement_percent', '5.0')
+        self.stabilize_percent_var = tk.StringVar(value=str(percent_default))
 
         processing_defaults = defaults.get('processing', {})
         self.flatten_var = tk.IntVar(value=1 if processing_defaults.get('flatten', True) else 0)
@@ -177,6 +168,9 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
         self.fix_zero_var = tk.IntVar(value=1 if processing_defaults.get('fix_zero', True) else 0)
         self.stats_var = tk.IntVar(value=1 if processing_defaults.get('export_stats') else 0)
         self.acf_var = tk.IntVar(value=1 if processing_defaults.get('generate_acf') else 0)
+        self.psdf_var = tk.IntVar(value=1 if processing_defaults.get('generate_psdf') else 0)
+        self.angular_var = tk.IntVar(
+            value=1 if processing_defaults.get('generate_angular_spectrum') else 0)
 
     def _build_ui(self):
         main = tk.Frame(self.root)
@@ -199,7 +193,6 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
 
         self._video_entries = []
         self._stabilization_entries = []
-        self._stabilization_checkbuttons = []
         self._video_checkbuttons = []
         self._align_method_buttons = []
         self._align_degree_entry = None
@@ -262,6 +255,20 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
         acf_cb = tk.Checkbutton(processing_frame, text='Generate ACF image', variable=self.acf_var)
         acf_cb.grid(row=6, column=0, columnspan=3, sticky='w')
 
+        psdf_cb = tk.Checkbutton(
+            processing_frame,
+            text='Generate 2D PSDF image',
+            variable=self.psdf_var,
+        )
+        psdf_cb.grid(row=7, column=0, columnspan=3, sticky='w')
+
+        angular_cb = tk.Checkbutton(
+            processing_frame,
+            text='Generate angular spectrum image',
+            variable=self.angular_var,
+        )
+        angular_cb.grid(row=8, column=0, columnspan=3, sticky='w')
+
         row += 1
 
         video_frame = tk.LabelFrame(main, text='Video rendering')
@@ -308,22 +315,13 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
         )
         self._stabilize_checkbox.grid(row=0, column=0, columnspan=3, sticky='w')
 
-        self._add_labeled_entry(stab_frame, 'Shakiness:', self.shakiness_var, 1,
-                                entry_list=self._stabilization_entries)
-        self._add_labeled_entry(stab_frame, 'Accuracy:', self.accuracy_var, 2,
-                                entry_list=self._stabilization_entries)
-        self._add_labeled_entry(stab_frame, 'Step size:', self.stepsize_var, 3,
-                                entry_list=self._stabilization_entries)
-        self._add_labeled_entry(stab_frame, 'Min contrast:', self.mincontrast_var, 4,
-                                entry_list=self._stabilization_entries)
-        self._add_labeled_entry(stab_frame, 'Smoothing:', self.smoothing_var, 5,
-                                entry_list=self._stabilization_entries)
-
-        tripod_cb = tk.Checkbutton(stab_frame, text='Tripod mode', variable=self.tripod_var)
-        tripod_cb.grid(row=6, column=0, columnspan=3, sticky='w')
-        crop_cb = tk.Checkbutton(stab_frame, text='Crop to shared area', variable=self.crop_var)
-        crop_cb.grid(row=7, column=0, columnspan=3, sticky='w')
-        self._stabilization_checkbuttons.extend([tripod_cb, crop_cb])
+        self._add_labeled_entry(
+            stab_frame,
+            'Max drift (% width):',
+            self.stabilize_percent_var,
+            1,
+            entry_list=self._stabilization_entries,
+        )
 
         row += 1
         button_frame = tk.Frame(main)
@@ -409,8 +407,6 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
         state = tk.NORMAL if (video_enabled and self.stabilize_var.get()) else tk.DISABLED
         for entry in self._stabilization_entries:
             entry.configure(state=state)
-        for checkbox in self._stabilization_checkbuttons:
-            checkbox.configure(state=state)
         if not video_enabled:
             self.stabilize_var.set(0)
 
@@ -482,15 +478,12 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
         uniform_frame_duration = bool(self.video_uniform_var.get()) if video_enabled else False
 
         stabilization_enabled = video_enabled and bool(self.stabilize_var.get())
+        percent_value = self._parse_float(self.stabilize_percent_var.get())
+        if percent_value is None or percent_value < 0:
+            percent_value = 0.0
         stabilization = StabilizationSettings(
             enabled=stabilization_enabled,
-            shakiness=int(self.shakiness_var.get() or 5),
-            accuracy=int(self.accuracy_var.get() or 9),
-            stepsize=int(self.stepsize_var.get() or 6),
-            mincontrast=float(self.mincontrast_var.get() or 0.3),
-            smoothing=int(self.smoothing_var.get() or 15),
-            tripod=bool(self.tripod_var.get()),
-            crop_shared_area=bool(self.crop_var.get()),
+            max_displacement_percent=percent_value,
         )
 
         ffmpeg_path = DEFAULT_FFMPEG_PATH
@@ -519,6 +512,8 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
             fix_zero=bool(self.fix_zero_var.get()),
             export_stats=bool(self.stats_var.get()),
             generate_acf=bool(self.acf_var.get()),
+            generate_psdf=bool(self.psdf_var.get()),
+            generate_angular_spectrum=bool(self.angular_var.get()),
         )
 
         config = BatchConfig(
