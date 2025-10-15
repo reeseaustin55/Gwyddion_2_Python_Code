@@ -694,16 +694,21 @@ class GwyddionBatchProcessor(object):
             zoom = 4.0
         if zoom <= 0:
             zoom = 4.0
-        for key in ('/module/psdf/zoom', '/module/psdf2d/zoom'):
+        try:
+            settings.set_double_by_name('/module/psdf/zoom', zoom)
+        except Exception:
             try:
-                settings.set_double_by_name(key, zoom)
-                continue
+                settings.set_int32_by_name('/module/psdf/zoom', int(round(zoom)))
             except Exception:
                 pass
+
+        try:
+            settings.set_int32_by_name('/module/psdf2d/zoom', int(round(zoom)))
+        except Exception:
             try:
-                settings.set_int32_by_name(key, int(round(zoom)))
+                settings.set_double_by_name('/module/psdf2d/zoom', zoom)
             except Exception:
-                continue
+                pass
         return self._generate_derived_image(
             container,
             settings,
