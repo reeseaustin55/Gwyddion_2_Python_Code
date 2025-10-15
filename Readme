@@ -35,3 +35,11 @@ represents the maximum expected motion between frames as a percentage of the
 frame width.
 
 All artefacts are written to the ``outputs`` directory by default.
+
+### Graphical interface availability
+
+The tooling provided in this repository is currently limited to the Python
+command line interface exposed through ``python -m gwyddion_pipeline``. A
+graphical user interface is not included at this stage; any GUI-based
+manipulation should continue to be performed within the Gwyddion desktop
+application itself.
