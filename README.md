@@ -97,14 +97,18 @@ checkboxes so scripted runs match interactive sessions.
 ### Video stitching
 
 Processed images are written to a timestamped subfolder inside the selected data
-directory (for example ``output_20250318_143512``).  Each channel now receives
+directory (for example ``output_20250318_143512``).  The GUI now refreshes this
+timestamp every time batch processing starts so consecutive runs never overwrite
+previous results, and the folder is always created beneath the chosen data
+directory.  Each channel now receives
 its own nested directory (``channel0``, ``channel1`` and so on) and, when ACF
 generation is enabled, the autocorrelation images for that channel are grouped
 under an ``acf`` subfolder.  Filenames still include the channel number so
 multiple channels can be exported from the same source file without collisions.
 An additional toggle exports PSDF imagery to a sibling ``psdf`` folder with a
-configurable zoom factor (default ``4×``) so the generated view matches the
-interactive Gwyddion workflow.
+configurable zoom factor (choices ``1×``, ``2×``, ``4×``, ``8×`` or ``16×``)
+so the generated view matches the interactive Gwyddion workflow while keeping
+the exported image at the same pixel dimensions as the main channel output.
 
 When video rendering is enabled the tool invokes `ffmpeg` using a concat file
 similar to the batch scripts provided previously.  The time span between the

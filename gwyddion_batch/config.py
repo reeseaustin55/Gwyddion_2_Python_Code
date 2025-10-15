@@ -6,6 +6,9 @@ import datetime
 import os
 
 
+ALLOWED_PSDF_ZOOMS = (1, 2, 4, 8, 16)
+
+
 class ProcessingOptions(object):
     """Toggles controlling the per-image Gwyddion processing pipeline."""
 
@@ -13,7 +16,7 @@ class ProcessingOptions(object):
                  align_method='polynomial', align_degree=2,
                  remove_scars=False, fix_zero=True,
                  export_stats=False, generate_acf=False,
-                 generate_psdf=False, psdf_zoom=4.0):
+                 generate_psdf=False, psdf_zoom=4):
         self.flatten = bool(flatten)
         self.align_rows = bool(align_rows)
         method = (align_method or 'polynomial').lower()
@@ -33,11 +36,11 @@ class ProcessingOptions(object):
         self.generate_acf = bool(generate_acf)
         self.generate_psdf = bool(generate_psdf)
         try:
-            zoom_value = float(psdf_zoom)
+            zoom_value = int(round(float(psdf_zoom)))
         except Exception:
-            zoom_value = 4.0
-        if zoom_value <= 0:
-            zoom_value = 4.0
+            zoom_value = 4
+        if zoom_value not in ALLOWED_PSDF_ZOOMS:
+            zoom_value = 4
         self.psdf_zoom = zoom_value
 
 
@@ -153,6 +156,24 @@ def _join_child_path(base_path, child, style):
     return os.path.join(base_path, child)
 
 
+def _is_subdirectory(parent, child):
+    """Return ``True`` if ``child`` is located within ``parent``."""
+
+    parent_abs = os.path.abspath(parent)
+    child_abs = os.path.abspath(child)
+    try:
+        relative = os.path.relpath(child_abs, parent_abs)
+    except ValueError:
+        return False
+    if relative in (os.curdir, '.'):
+        return True
+    if relative == os.pardir:
+        return False
+    if relative.startswith(os.pardir + os.sep):
+        return False
+    return True
+
+
 class BatchConfig(object):
     """Container for settings used during batch processing."""
 
@@ -191,11 +212,18 @@ class BatchConfig(object):
         self.gwyddion_paths = list(gwyddion_paths or [])
         if output_directory:
             normalized_output = _normalize_base_path(output_directory)
-            self.output_directory = _apply_path_style(normalized_output, path_style)
+            formatted_output = _apply_path_style(normalized_output, path_style)
         else:
+            formatted_output = None
+        if not formatted_output:
             timestamp = self.run_timestamp.strftime('output_%Y%m%d_%H%M%S')
-            default_output = _join_child_path(self.folder_path, timestamp, path_style)
-            self.output_directory = default_output
+            formatted_output = _join_child_path(self.folder_path, timestamp, path_style)
+
+        if not _is_subdirectory(self.folder_path, formatted_output):
+            timestamp = self.run_timestamp.strftime('output_%Y%m%d_%H%M%S')
+            formatted_output = _join_child_path(self.folder_path, timestamp, path_style)
+
+        self.output_directory = formatted_output
         if video_settings is None:
             video_settings = VideoSettings()
         if stabilization_settings is not None:

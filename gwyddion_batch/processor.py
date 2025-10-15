@@ -268,6 +268,7 @@ class GwyddionBatchProcessor(object):
                 output_path,
                 scaled_channel,
                 options,
+                pixel_count,
             )
         return {
             'image_path': output_path,
@@ -686,7 +687,7 @@ class GwyddionBatchProcessor(object):
             return None
 
     def _generate_psdf_image(self, container, settings, output_path,
-                             scaled_channel_id, options):
+                             scaled_channel_id, options, pixel_count):
         zoom_value = getattr(options, 'psdf_zoom', 4.0)
         try:
             zoom = float(zoom_value)
@@ -720,11 +721,14 @@ class GwyddionBatchProcessor(object):
             file_label='PSDF image',
             function_names=['psdf', 'psdf2d'],
             settings_paths=['/module/psdf/create_image'],
+            channel_transform=lambda channel_id: self._rescale_square_channel(
+                container, settings, channel_id, pixel_count),
         )
 
     def _generate_derived_image(self, container, settings, output_path, scaled_channel_id,
                                 directory_name, suffix, description, file_label,
-                                function_names, settings_paths=None):
+                                function_names, settings_paths=None,
+                                channel_transform=None):
         gwy = self.gwy
         try:
             for key in settings_paths or []:
@@ -752,6 +756,13 @@ class GwyddionBatchProcessor(object):
             if not data_ids:
                 return None
             derived_channel = data_ids[-1]
+            if channel_transform is not None:
+                try:
+                    transformed = channel_transform(derived_channel)
+                except Exception:
+                    transformed = None
+                if transformed is not None:
+                    derived_channel = transformed
             gwy.gwy_app_data_browser_select_data_field(container, derived_channel)
 
             base, file_name = os.path.split(output_path)
@@ -771,6 +782,65 @@ class GwyddionBatchProcessor(object):
             self.logger.error('Failed to generate %s for %s: %s', file_label, output_path, exc)
             self.logger.debug('%s error details', description, exc_info=True)
             return None
+
+    def _rescale_square_channel(self, container, settings, channel_id, pixel_count):
+        if pixel_count is None:
+            return channel_id
+        try:
+            target_pixels = int(pixel_count)
+        except Exception:
+            return channel_id
+        if target_pixels <= 0:
+            return channel_id
+
+        gwy = self.gwy
+        try:
+            gwy.gwy_app_data_browser_select_data_field(container, channel_id)
+        except Exception:
+            return channel_id
+
+        data_field = gwy.gwy_app_data_browser_get_current(gwy.APP_DATA_FIELD)
+        if data_field is None:
+            return channel_id
+        try:
+            xres = data_field.get_xres()
+            yres = data_field.get_yres()
+        except Exception:
+            return channel_id
+        if xres == target_pixels and yres == target_pixels:
+            return channel_id
+        if xres <= 0:
+            return channel_id
+
+        scale_ratio = float(target_pixels) / float(xres)
+        try:
+            settings.set_int32_by_name('/module/scale/interp', 4)
+        except Exception:
+            pass
+        try:
+            settings.set_boolean_by_name('/module/scale/proportional', True)
+        except Exception:
+            pass
+        try:
+            settings.set_double_by_name('/module/scale/ratio', scale_ratio)
+        except Exception:
+            pass
+        try:
+            settings.set_boolean_by_name('/module/scale/proportional', False)
+        except Exception:
+            pass
+        try:
+            settings.set_double_by_name('/module/scale/aspectratio', 1.0)
+        except Exception:
+            pass
+
+        if not self._run_process_function(container, 'scale', description='PSDF rescaling'):
+            return channel_id
+
+        data_ids = gwy.gwy_app_data_browser_get_data_ids(container)
+        if not data_ids:
+            return channel_id
+        return data_ids[-1]
 
     def _render_channel_videos(self, channel_number, output_paths, acf_paths,
                                capture_times, config):

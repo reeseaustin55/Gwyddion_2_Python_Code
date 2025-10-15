@@ -5,7 +5,7 @@ import logging
 import sys
 
 from .config import (BatchConfig, VideoSettings, StabilizationSettings,
-                     ProcessingOptions)
+                     ProcessingOptions, ALLOWED_PSDF_ZOOMS)
 from .gwyddion_loader import import_gwyddion
 from .processor import GwyddionBatchProcessor
 
@@ -94,8 +94,10 @@ def build_arg_parser():
                         help='Generate and export a 2D PSDF image for each processed channel.')
     parser.add_argument('--no-psdf', dest='generate_psdf', action='store_false',
                         help='Disable PSDF export (default).')
-    parser.add_argument('--psdf-zoom', dest='psdf_zoom', type=float, default=4.0,
-                        help='Zoom factor used when generating PSDF images (default: 4).')
+    parser.add_argument('--psdf-zoom', dest='psdf_zoom', type=int, default=4,
+                        choices=ALLOWED_PSDF_ZOOMS,
+                        help='Zoom factor used when generating PSDF images (choices: %s, default: 4).' %
+                        ', '.join(str(value) for value in ALLOWED_PSDF_ZOOMS))
     parser.set_defaults(
         flatten=True,
         align_rows=True,
@@ -104,7 +106,7 @@ def build_arg_parser():
         export_stats=False,
         generate_acf=False,
         generate_psdf=False,
-        psdf_zoom=4.0,
+        psdf_zoom=4,
     )
     return parser
 

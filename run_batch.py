@@ -48,7 +48,7 @@ FIX_ZERO = True
 EXPORT_STATS = False
 GENERATE_ACF = False
 GENERATE_PSDF = False
-PSDF_ZOOM = 4.0
+PSDF_ZOOM = 4  # Valid options: 1, 2, 4, 8, 16
 # ---------------------------------------------------------------------------
 
 

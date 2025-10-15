@@ -23,7 +23,7 @@ except ImportError:  # pragma: no cover - Python 3 fallback
     import queue
 
 from .config import (BatchConfig, VideoSettings, StabilizationSettings,
-                     ProcessingOptions)
+                     ProcessingOptions, ALLOWED_PSDF_ZOOMS)
 from .gwyddion_loader import import_gwyddion
 from .processor import GwyddionBatchProcessor
 
@@ -169,8 +169,8 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
         self.stats_var = tk.IntVar(value=1 if processing_defaults.get('export_stats') else 0)
         self.acf_var = tk.IntVar(value=1 if processing_defaults.get('generate_acf') else 0)
         self.psdf_var = tk.IntVar(value=1 if processing_defaults.get('generate_psdf') else 0)
-        psdf_zoom_default = processing_defaults.get('psdf_zoom', '4.0')
-        self.psdf_zoom_var = tk.StringVar(value=str(psdf_zoom_default))
+        psdf_zoom_default = processing_defaults.get('psdf_zoom', '4')
+        self.psdf_zoom_var = tk.StringVar(value=self._sanitize_psdf_zoom(psdf_zoom_default))
 
     def _build_ui(self):
         main = tk.Frame(self.root)
@@ -265,8 +265,10 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
         psdf_cb.pack(side='left')
         psdf_zoom_label = tk.Label(psdf_frame, text='Zoom:')
         psdf_zoom_label.pack(side='left', padx=(10, 2))
-        psdf_zoom_entry = tk.Entry(psdf_frame, textvariable=self.psdf_zoom_var, width=6)
-        psdf_zoom_entry.pack(side='left')
+        psdf_zoom_choices = [str(value) for value in ALLOWED_PSDF_ZOOMS]
+        self.psdf_zoom_menu = tk.OptionMenu(psdf_frame, self.psdf_zoom_var, *psdf_zoom_choices)
+        self.psdf_zoom_menu.configure(width=4)
+        self.psdf_zoom_menu.pack(side='left')
 
         row += 1
 
@@ -425,6 +427,9 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
     def start_processing(self):
         if self.processing_thread and self.processing_thread.is_alive():
             return
+        folder_for_run = self.folder_var.get().strip()
+        if folder_for_run:
+            self.output_dir_var.set(self._default_output_for(folder_for_run))
         try:
             config = self._build_config()
         except ValueError as exc:
@@ -502,9 +507,7 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
             align_degree = int(self.align_degree_var.get())
         except Exception:
             align_degree = 2
-        psdf_zoom = self._parse_float(self.psdf_zoom_var.get())
-        if psdf_zoom is None or psdf_zoom <= 0:
-            psdf_zoom = 4.0
+        psdf_zoom = int(self._sanitize_psdf_zoom(self.psdf_zoom_var.get()))
         processing_options = ProcessingOptions(
             flatten=bool(self.flatten_var.get()),
             align_rows=bool(self.align_rows_var.get()),
@@ -518,12 +521,15 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
             psdf_zoom=psdf_zoom,
         )
 
+        sanitized_output = self._sanitize_output_directory(folder, output_directory)
+        self.output_dir_var.set(sanitized_output)
+
         config = BatchConfig(
             folder_path=folder,
             channel_numbers=channels,
             pixel_count=pixel_count,
             file_filter=file_filter,
-            output_directory=output_directory,
+            output_directory=sanitized_output,
             video_settings=video_settings,
             run_timestamp=datetime.datetime.now(),
             processing_options=processing_options,
@@ -538,6 +544,36 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
         if not value:
             return None
         return float(value)
+
+    def _sanitize_psdf_zoom(self, value):
+        try:
+            numeric = int(round(float(value)))
+        except Exception:
+            numeric = 4
+        if numeric not in ALLOWED_PSDF_ZOOMS:
+            numeric = 4
+        return str(numeric)
+
+    def _sanitize_output_directory(self, folder, path):
+        folder = (folder or '').strip()
+        default_output = self._default_output_for(folder)
+        if not folder:
+            return default_output
+        if not path:
+            return default_output
+        normalized_folder = os.path.abspath(folder)
+        normalized_output = os.path.abspath(path)
+        try:
+            relative = os.path.relpath(normalized_output, normalized_folder)
+        except ValueError:
+            return default_output
+        if relative in (os.curdir, '.'):
+            return normalized_output
+        if relative == os.pardir:
+            return default_output
+        if relative.startswith(os.pardir + os.sep):
+            return default_output
+        return normalized_output
 
     def _run_processing(self, config):
         handler = _QueueHandler(self.log_queue)
