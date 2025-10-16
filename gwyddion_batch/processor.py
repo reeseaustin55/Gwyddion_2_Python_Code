@@ -542,7 +542,12 @@ class GwyddionBatchProcessor(object):
                 segments = [normalized_key]
             leaf = segments[-1].lower()
             base_path = '/'.join(segments[:-1])
-            if leaf in ('value', 'values', 'val', 'unit', 'units', 'label', 'name', 'text'):
+            if leaf in (
+                'value', 'values', 'val',
+                'unit', 'units', 'label', 'name', 'text',
+                'si_value', 'si-value', 'sivalue',
+                'siunit', 'si_unit', 'si-unit', 'siunits', 'si-units',
+            ):
                 grouped[base_path][leaf] = value
                 continue
             if self._is_container_like(value):
@@ -561,20 +566,33 @@ class GwyddionBatchProcessor(object):
                     continue
             combined_label = self._combine_stat_labels('/'.join(segments), None)
             if combined_label:
-                value_text = self._format_stat_value(value)
+                value_text, unit_text = self._extract_value_and_unit(value)
                 if value_text:
-                    flat_values[combined_label] = value_text
+                    if unit_text:
+                        flat_values[combined_label] = '%s %s' % (value_text, unit_text)
+                    else:
+                        flat_values[combined_label] = value_text
         for path, details in grouped.items():
             label_candidate = details.get('label') or details.get('name') or details.get('text')
             combined_label = self._combine_stat_labels(path, label_candidate)
             value_obj = details.get('value')
             if value_obj is None:
                 value_obj = details.get('values')
+            if value_obj is None:
+                value_obj = details.get('si_value') or details.get('si-value') or details.get('sivalue')
             unit_obj = details.get('unit')
             if unit_obj is None:
                 unit_obj = details.get('units')
-            value_text = self._format_stat_value(value_obj)
+            if unit_obj is None:
+                unit_obj = (
+                    details.get('siunit') or details.get('si_unit') or
+                    details.get('si-unit') or details.get('siunits') or
+                    details.get('si-units')
+                )
+            value_text, fallback_unit = self._extract_value_and_unit(value_obj, unit_obj)
             unit_text = self._format_stat_unit(unit_obj)
+            if not unit_text:
+                unit_text = fallback_unit
             if value_text:
                 if unit_text:
                     flat_values[combined_label] = '%s %s' % (value_text, unit_text)
@@ -689,6 +707,29 @@ class GwyddionBatchProcessor(object):
                     pass
             except Exception:
                 pass
+        foreach = getattr(self.gwy, 'gwy_container_foreach', None)
+        if callable(foreach):
+            collected = []
+
+            def _collector(container_obj, name, value_obj=None, user_data=None):
+                try:
+                    text = self._stringify_value(name)
+                except Exception:
+                    text = name
+                if text:
+                    collected.append(text)
+
+            try:
+                foreach(container, _collector, None)
+            except TypeError:
+                try:
+                    foreach(container, _collector)
+                except Exception:
+                    collected = []
+            except Exception:
+                collected = []
+            if collected:
+                return collected
         return []
 
     def _container_fetch(self, container, key):
@@ -808,8 +849,10 @@ class GwyddionBatchProcessor(object):
             label = self._stringify_value(name_value)
             if not label:
                 continue
-            value_text = self._format_stat_value(value_value)
+            value_text, fallback_unit = self._extract_value_and_unit(value_value, unit_value)
             unit_text = self._format_stat_unit(unit_value)
+            if not unit_text:
+                unit_text = fallback_unit
             if not value_text and not unit_text:
                 continue
             if unit_text:
@@ -873,8 +916,14 @@ class GwyddionBatchProcessor(object):
             enriched = {}
             for key, value in normalized.items():
                 label = self._stringify_value(key)
-                text_value = self._format_stat_value(value)
-                if label:
+                if not label:
+                    continue
+                text_value, unit_text = self._extract_value_and_unit(value)
+                if not text_value and not unit_text:
+                    continue
+                if unit_text:
+                    enriched[label] = '%s %s' % (text_value, unit_text)
+                else:
                     enriched[label] = text_value
             if enriched:
                 return enriched
@@ -892,10 +941,8 @@ class GwyddionBatchProcessor(object):
             label = self._stringify_value(names[index])
             if not label:
                 continue
-            value_text = self._format_stat_value(values[index])
-            unit_text = ''
-            if units and index < len(units):
-                unit_text = self._format_stat_unit(units[index])
+            explicit_unit = units[index] if units and index < len(units) else None
+            value_text, unit_text = self._extract_value_and_unit(values[index], explicit_unit)
             if unit_text:
                 stats[label] = '%s %s' % (value_text, unit_text)
             else:
@@ -907,10 +954,8 @@ class GwyddionBatchProcessor(object):
         for entry in sequence:
             if isinstance(entry, (list, tuple)) and len(entry) >= 2:
                 label = self._stringify_value(entry[0])
-                value_text = self._format_stat_value(entry[1])
-                unit_text = ''
-                if len(entry) >= 3:
-                    unit_text = self._format_stat_unit(entry[2])
+                explicit_unit = entry[2] if len(entry) >= 3 else None
+                value_text, unit_text = self._extract_value_and_unit(entry[1], explicit_unit)
                 if label:
                     if unit_text:
                         stats[label] = '%s %s' % (value_text, unit_text)
@@ -1051,21 +1096,150 @@ class GwyddionBatchProcessor(object):
         except Exception:
             return ''
 
-    def _format_stat_value(self, value):
+    def _format_number(self, value):
         if value is None:
             return ''
-        if isinstance(value, (int, float)):
-            return ('%.6g' % float(value)).strip()
         try:
-            text = str(value).strip()
-            if text:
-                return text
+            numeric = float(value)
         except Exception:
-            pass
-        return ''
+            return ''
+        return ('%.6g' % numeric).strip()
+
+    def _unit_to_text(self, unit_obj):
+        if unit_obj is None:
+            return ''
+        if isinstance(unit_obj, (text_type, binary_type)):
+            return self._stringify_value(unit_obj)
+        if isinstance(unit_obj, (int, float)):
+            return ''
+        for name in (
+            'get_si_string', 'get_string', 'get_unit_string',
+            'get_symbol', 'get_si_unit_string',
+        ):
+            getter = getattr(unit_obj, name, None)
+            if getter is None:
+                continue
+            try:
+                text = getter()
+            except Exception:
+                continue
+            formatted = self._stringify_value(text)
+            if formatted:
+                return formatted
+        for attr in ('si_string', 'unit_string', 'string', 'symbol'):
+            value = getattr(unit_obj, attr, None)
+            if value:
+                formatted = self._stringify_value(value)
+                if formatted:
+                    return formatted
+        try:
+            return self._stringify_value(unit_obj)
+        except Exception:
+            return ''
+
+    def _decode_si_value_object(self, value_obj):
+        if value_obj is None:
+            return None, ''
+        for getter_name in (
+            'get_value', 'get_numeric_value', 'get_val', 'get_d',
+            'value', 'numeric_value', 'numeric',
+        ):
+            getter = getattr(value_obj, getter_name, None)
+            numeric = None
+            if callable(getter):
+                try:
+                    numeric = getter()
+                except TypeError:
+                    try:
+                        numeric = getter(None)
+                    except Exception:
+                        continue
+                except Exception:
+                    continue
+            elif getter is not None:
+                numeric = getter
+            if numeric is None:
+                continue
+            text = self._format_number(numeric)
+            unit_text = ''
+            for unit_getter_name in (
+                'get_si_unit', 'get_unit', 'si_unit', 'unit',
+            ):
+                unit_getter = getattr(value_obj, unit_getter_name, None)
+                if unit_getter is None:
+                    continue
+                try:
+                    unit_candidate = unit_getter()
+                except TypeError:
+                    try:
+                        unit_candidate = unit_getter(None)
+                    except Exception:
+                        continue
+                except Exception:
+                    continue
+                unit_text = self._unit_to_text(unit_candidate)
+                if unit_text:
+                    break
+            if not unit_text:
+                for attr in ('unit_string', 'si_unit_string'):
+                    unit_candidate = getattr(value_obj, attr, None)
+                    if not unit_candidate:
+                        continue
+                    unit_text = self._unit_to_text(unit_candidate)
+                    if unit_text:
+                        break
+            return text, unit_text
+        return None, ''
+
+    def _extract_value_and_unit(self, value_obj, unit_obj=None):
+        if value_obj is None and unit_obj is None:
+            return '', ''
+        value_text = ''
+        unit_text = ''
+        decoded_value, decoded_unit = self._decode_si_value_object(value_obj)
+        if decoded_value:
+            value_text = decoded_value
+        if decoded_unit:
+            unit_text = decoded_unit
+        if not value_text:
+            if isinstance(value_obj, (int, float)):
+                value_text = self._format_number(value_obj)
+            else:
+                for attr in ('value', 'val', 'numeric', 'number'):
+                    attr_value = getattr(value_obj, attr, None)
+                    if attr_value is None or callable(attr_value):
+                        continue
+                    candidate = self._format_number(attr_value)
+                    if candidate:
+                        value_text = candidate
+                        break
+                if not value_text:
+                    for method_name in ('get', 'get_value_by_name'):
+                        getter = getattr(value_obj, method_name, None)
+                        if getter is None:
+                            continue
+                        try:
+                            raw = getter('value')
+                        except Exception:
+                            continue
+                        candidate = self._format_number(raw)
+                        if candidate:
+                            value_text = candidate
+                            break
+                if not value_text:
+                    text_value = self._stringify_value(value_obj)
+                    if text_value:
+                        value_text = text_value
+        if unit_obj is not None and not unit_text:
+            unit_text = self._unit_to_text(unit_obj)
+        return value_text, unit_text
+
+    def _format_stat_value(self, value):
+        value_text, _ = self._extract_value_and_unit(value)
+        return value_text
 
     def _format_stat_unit(self, value):
-        text = self._stringify_value(value)
+        text = self._unit_to_text(value)
         if not text:
             return ''
         normalized = text.lower()

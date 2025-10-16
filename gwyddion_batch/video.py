@@ -2,6 +2,7 @@
 
 from __future__ import absolute_import
 
+import binascii
 import io
 import math
 import os
@@ -10,12 +11,43 @@ import struct
 import subprocess
 import sys
 import tempfile
+import zlib
 
 import numpy as np
 
 from .compat import text_type, to_native_path
 
 PNG_SIGNATURE = b'\x89PNG\r\n\x1a\n'
+
+
+def _write_png_chunk(handle, chunk_type, data):
+    length = len(data)
+    handle.write(struct.pack('>I', length))
+    handle.write(chunk_type)
+    if data:
+        handle.write(data)
+    crc = binascii.crc32(chunk_type)
+    crc = binascii.crc32(data, crc)
+    handle.write(struct.pack('>I', crc & 0xFFFFFFFF))
+
+
+def _write_png(path, array):
+    array = np.asarray(array)
+    if array.ndim != 2:
+        raise ValueError('Only 2D grayscale arrays can be written as PNG images')
+    if array.dtype != np.uint8:
+        array = np.clip(np.rint(array), 0, 255).astype(np.uint8)
+    height, width = array.shape
+    rows = []
+    for row in np.ascontiguousarray(array):
+        rows.append(b'\x00' + row.tobytes())
+    compressed = zlib.compress(b''.join(rows), 9)
+    with open(path, 'wb') as handle:
+        handle.write(PNG_SIGNATURE)
+        ihdr = struct.pack('>IIBBBBB', width, height, 8, 0, 0, 0, 0)
+        _write_png_chunk(handle, b'IHDR', ihdr)
+        _write_png_chunk(handle, b'IDAT', compressed)
+        _write_png_chunk(handle, b'IEND', b'')
 
 
 def _ensure_text(value):
@@ -240,10 +272,10 @@ def _refine_translation(reference, frame, approx_dx, approx_dy, max_allowed=None
 def _estimate_frame_translations(image_paths, ffmpeg_path, width, height,
                                  max_shift_px, logger=None):
     if not image_paths:
-        return []
+        return [], []
     detection_width, detection_height, scale_filter = _determine_detection_geometry(width, height)
     if detection_width is None or detection_height is None:
-        return []
+        return [], []
 
     try:
         prev_small = _load_frame_bytes(image_paths[0], ffmpeg_path,
@@ -255,11 +287,12 @@ def _estimate_frame_translations(image_paths, ffmpeg_path, width, height,
         if logger:
             logger.warning('Unable to load frame %s for stabilization: %s',
                            image_paths[0], exc)
-        return []
+        return [], []
 
     translations = [(0, 0)]
     cumulative_dx = 0
     cumulative_dy = 0
+    cached_full_frames = [prev_full]
 
     if max_shift_px is not None:
         coarse_limit = int(round(max_shift_px * float(detection_width) / float(width)))
@@ -285,7 +318,7 @@ def _estimate_frame_translations(image_paths, ffmpeg_path, width, height,
             if logger:
                 logger.warning('Unable to load frame %s for stabilization: %s',
                                path, exc)
-            return []
+            return [], []
 
         dx_small, dy_small = _phase_correlation_translation(
             prev_small,
@@ -313,8 +346,9 @@ def _estimate_frame_translations(image_paths, ffmpeg_path, width, height,
 
         prev_small = curr_small
         prev_full = curr_full
+        cached_full_frames.append(curr_full)
 
-    return translations
+    return translations, cached_full_frames
 
 
 def _compute_shared_crop(translations, width, height):
@@ -334,10 +368,14 @@ def _compute_shared_crop(translations, width, height):
 
 
 def _render_stabilized_frames(image_paths, ffmpeg_path, translations,
-                              crop_info, width, height):
+                              crop_info, width, height, cached_frames=None):
     x_min, y_min, crop_w, crop_h = crop_info
     temp_dir = tempfile.mkdtemp(prefix='gwyddion_stabilized_')
     stabilized_paths = []
+    use_cached = (
+        cached_frames is not None and
+        len(cached_frames) == len(image_paths)
+    )
     for index, path in enumerate(image_paths):
         dx, dy = translations[index]
         crop_x = x_min - dx
@@ -345,16 +383,12 @@ def _render_stabilized_frames(image_paths, ffmpeg_path, translations,
         crop_x = int(max(0, min(width - crop_w, crop_x)))
         crop_y = int(max(0, min(height - crop_h, crop_y)))
         output_path = os.path.join(temp_dir, 'frame_%06d.png' % index)
-        command = [
-            to_native_path(ffmpeg_path),
-            '-v', 'error',
-            '-y',
-            '-i', to_native_path(path),
-            '-vf', 'crop=%d:%d:%d:%d' % (crop_w, crop_h, crop_x, crop_y),
-            '-frames:v', '1',
-            to_native_path(output_path),
-        ]
-        subprocess.check_call(command)
+        if use_cached:
+            frame_array = cached_frames[index]
+        else:
+            frame_array = _load_frame_bytes(path, ffmpeg_path, width, height, None)
+        cropped = frame_array[crop_y:crop_y + crop_h, crop_x:crop_x + crop_w]
+        _write_png(output_path, cropped)
         stabilized_paths.append(output_path)
     return temp_dir, stabilized_paths
 
@@ -364,7 +398,7 @@ def _prepare_stabilized_sequence(image_paths, width, height, ffmpeg_path,
     if width is None or height is None:
         return None
     max_shift_px = _calculate_max_shift_pixels(stabilization, width)
-    translations = _estimate_frame_translations(
+    translations, cached_frames = _estimate_frame_translations(
         image_paths,
         ffmpeg_path,
         int(width),
@@ -384,6 +418,7 @@ def _prepare_stabilized_sequence(image_paths, width, height, ffmpeg_path,
         crop_info,
         int(width),
         int(height),
+        cached_frames=cached_frames,
     )
     return {
         'paths': stabilized_paths,
