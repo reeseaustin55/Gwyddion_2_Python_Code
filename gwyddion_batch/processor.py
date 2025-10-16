@@ -6,7 +6,7 @@ import logging
 import os
 from contextlib import contextmanager
 
-from .compat import to_native_path
+from .compat import binary_type, text_type, to_native_path
 from .config import format_time_multiplier, ProcessingOptions
 from .video import stitch_images_to_video
 
@@ -466,6 +466,9 @@ class GwyddionBatchProcessor(object):
     def _collect_statistics(self, container, data_field, channel_id):
         if data_field is None:
             return {}
+        stats = self._collect_statistical_quantities(container, channel_id, data_field)
+        if stats:
+            return stats
         stats = self._collect_gwyddion_stats(data_field)
         if stats:
             return stats
@@ -473,6 +476,380 @@ class GwyddionBatchProcessor(object):
         if stats:
             return stats
         return self._collect_basic_statistics(data_field)
+
+    def _collect_statistical_quantities(self, container, channel_id, data_field):
+        gwy = self.gwy
+        try:
+            gwy.gwy_app_data_browser_select_data_field(container, channel_id)
+        except Exception:
+            pass
+        ran = self._run_process_function(
+            container,
+            'statistical_quantities',
+            description='statistical quantities',
+        )
+        if not ran:
+            ran = self._run_process_function(
+                container,
+                'statquant',
+                description='statistical quantities',
+            )
+        if not ran:
+            return {}
+
+        stats = self._extract_statistical_quantities_from_container(container, channel_id)
+        if stats:
+            return stats
+
+        table_stats = self._extract_statistical_quantities_from_table()
+        if table_stats:
+            return table_stats
+
+        return {}
+
+    def _extract_statistical_quantities_from_container(self, container, channel_id):
+        gwy = self.gwy
+        getter = getattr(gwy, 'gwy_container_get_object_by_name', None)
+        if getter is None:
+            return {}
+
+        candidate_keys = [
+            '/%d/statistics/statistical_quantities',
+            '/%d/statistics/statquant',
+            '/%d/data/statistical_quantities',
+            '/%d/data/statquant',
+            '/%d/statistics/quantities',
+            '/module/statistics/statistical_quantities',
+            '/module/statistics/statquant',
+            '/module/statistical_quantities/results',
+            '/module/statistical_quantities',
+            '/module/statistical-quantities/results',
+            '/module/statistical-quantities',
+        ]
+
+        for template in candidate_keys:
+            if '%d' in template:
+                key = template % int(channel_id)
+            else:
+                key = template
+            try:
+                obj = getter(container, key)
+            except Exception:
+                obj = None
+            stats = self._decode_statistical_quantities_object(obj)
+            if stats:
+                return stats
+        return {}
+
+    def _extract_statistical_quantities_from_table(self):
+        gwy = self.gwy
+        app_table_enum = getattr(gwy, 'APP_TABLE', None)
+        browser_getter = getattr(gwy, 'gwy_app_data_browser_get_current', None)
+        if browser_getter is None or app_table_enum is None:
+            return {}
+        table = None
+        try:
+            table = browser_getter(app_table_enum)
+        except TypeError:
+            try:
+                table = browser_getter()
+            except Exception:
+                table = None
+        except Exception:
+            table = None
+        if table is None:
+            return {}
+
+        length_getters = [
+            'get_n_rows',
+            'get_rows',
+            'get_length',
+            'get_size',
+        ]
+        value_getters = [
+            ('get_value', True),
+            ('get', True),
+            ('get_cell', True),
+            ('value', True),
+        ]
+
+        count = None
+        for name in length_getters:
+            getter = getattr(table, name, None)
+            if getter is None:
+                continue
+            try:
+                count = int(getter())
+                break
+            except Exception:
+                continue
+        if count is None or count <= 0:
+            try:
+                count = len(table)
+            except Exception:
+                count = 0
+        if count <= 0:
+            return {}
+
+        stats = {}
+        for row in range(count):
+            name_value = None
+            value_value = None
+            unit_value = None
+            for getter_name, expects_index in value_getters:
+                getter = getattr(table, getter_name, None)
+                if getter is None:
+                    continue
+                try:
+                    if expects_index:
+                        result = getter(row)
+                    else:
+                        result = getter()
+                except TypeError:
+                    try:
+                        result = getter(row, 0)
+                    except Exception:
+                        continue
+                except Exception:
+                    continue
+                if isinstance(result, (list, tuple)):
+                    if len(result) >= 1 and name_value is None:
+                        name_value = result[0]
+                    if len(result) >= 2 and value_value is None:
+                        value_value = result[1]
+                    if len(result) >= 3 and unit_value is None:
+                        unit_value = result[2]
+                    if name_value is not None and value_value is not None:
+                        break
+                elif name_value is None:
+                    name_value = result
+                elif value_value is None:
+                    value_value = result
+                elif unit_value is None:
+                    unit_value = result
+            label = self._stringify_value(name_value)
+            if not label:
+                continue
+            value_text = self._format_stat_value(value_value)
+            unit_text = self._format_stat_unit(unit_value)
+            if unit_text:
+                stats[label] = '%s %s' % (value_text, unit_text)
+            else:
+                stats[label] = value_text
+        return stats
+
+    def _decode_statistical_quantities_object(self, obj):
+        if not obj:
+            return {}
+        mapping = {}
+        if isinstance(obj, (list, tuple)):
+            mapping = self._decode_statquant_sequence(obj)
+        if mapping:
+            return mapping
+        normalized = self._normalize_stats_object(obj)
+        if normalized:
+            enriched = {}
+            for key, value in normalized.items():
+                label = self._stringify_value(key)
+                text_value = self._format_stat_value(value)
+                if label:
+                    enriched[label] = text_value
+            if enriched:
+                return enriched
+
+        names = self._extract_sequence(obj, 'names')
+        values = self._extract_sequence(obj, 'values')
+        units = self._extract_sequence(obj, 'units')
+        if not names or not values:
+            names = self._extract_sequence(obj, 'labels')
+        if not names or not values:
+            return {}
+        stats = {}
+        count = min(len(names), len(values))
+        for index in range(count):
+            label = self._stringify_value(names[index])
+            if not label:
+                continue
+            value_text = self._format_stat_value(values[index])
+            unit_text = ''
+            if units and index < len(units):
+                unit_text = self._format_stat_unit(units[index])
+            if unit_text:
+                stats[label] = '%s %s' % (value_text, unit_text)
+            else:
+                stats[label] = value_text
+        return stats
+
+    def _decode_statquant_sequence(self, sequence):
+        stats = {}
+        for entry in sequence:
+            if isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                label = self._stringify_value(entry[0])
+                value_text = self._format_stat_value(entry[1])
+                unit_text = ''
+                if len(entry) >= 3:
+                    unit_text = self._format_stat_unit(entry[2])
+                if label:
+                    if unit_text:
+                        stats[label] = '%s %s' % (value_text, unit_text)
+                    else:
+                        stats[label] = value_text
+        return stats
+
+    def _extract_sequence(self, container_like, key):
+        if not container_like:
+            return []
+        getter_names = [
+            'get',
+            'get_value_by_name',
+            'get_by_name',
+        ]
+        for name in getter_names:
+            getter = getattr(container_like, name, None)
+            if getter is None:
+                continue
+            try:
+                value = getter(key)
+            except Exception:
+                continue
+            sequence = self._sequence_from_object(value)
+            if sequence is not None:
+                return sequence
+        gwy_getter = getattr(self.gwy, 'gwy_container_get_object_by_name', None)
+        if gwy_getter is not None:
+            try:
+                value = gwy_getter(container_like, key)
+            except Exception:
+                value = None
+            sequence = self._sequence_from_object(value)
+            if sequence is not None:
+                return sequence
+        return []
+
+    def _sequence_from_object(self, value):
+        if value is None:
+            return []
+        if isinstance(value, (list, tuple)):
+            return list(value)
+        if isinstance(value, text_type):
+            return [value]
+        if isinstance(value, binary_type):
+            try:
+                return [value.decode('utf-8')]
+            except Exception:
+                return [value]
+        to_list = getattr(value, 'to_list', None)
+        if callable(to_list):
+            try:
+                data = to_list()
+                if isinstance(data, (list, tuple)):
+                    return list(data)
+            except Exception:
+                pass
+        get_data = getattr(value, 'get_data', None)
+        if callable(get_data):
+            try:
+                data = get_data()
+                if isinstance(data, (list, tuple)):
+                    return list(data)
+            except Exception:
+                pass
+        get_array = getattr(value, 'get_array', None)
+        if callable(get_array):
+            try:
+                data = get_array()
+                if isinstance(data, (list, tuple)):
+                    return list(data)
+            except Exception:
+                pass
+        length_getters = ['__len__', 'get_length', 'get_n', 'get_size']
+        fetch_getters = ['__getitem__', 'get', 'value', 'get_value']
+        for len_name in length_getters:
+            length_fn = getattr(value, len_name, None)
+            if length_fn is None:
+                continue
+            try:
+                length = length_fn()
+            except TypeError:
+                try:
+                    length = length_fn(0)
+                except Exception:
+                    continue
+            except Exception:
+                continue
+            try:
+                length = int(length)
+            except Exception:
+                continue
+            if length <= 0 or length > 4096:
+                continue
+            for fetch_name in fetch_getters:
+                fetch = getattr(value, fetch_name, None)
+                if fetch is None:
+                    continue
+                sequence = []
+                success = True
+                for index in range(length):
+                    try:
+                        item = fetch(index)
+                    except Exception:
+                        success = False
+                        break
+                    sequence.append(item)
+                if success:
+                    return sequence
+        iterator = getattr(value, '__iter__', None)
+        if iterator is not None:
+            try:
+                return list(iterator())
+            except TypeError:
+                try:
+                    return list(value)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+        return []
+
+    def _stringify_value(self, value):
+        if value is None:
+            return ''
+        if isinstance(value, text_type):
+            return value.strip()
+        if isinstance(value, binary_type):
+            try:
+                return value.decode('utf-8').strip()
+            except Exception:
+                try:
+                    return value.decode('latin-1').strip()
+                except Exception:
+                    return repr(value)
+        try:
+            return str(value).strip()
+        except Exception:
+            return ''
+
+    def _format_stat_value(self, value):
+        if value is None:
+            return ''
+        if isinstance(value, (int, float)):
+            return ('%.6g' % float(value)).strip()
+        try:
+            text = str(value).strip()
+            if text:
+                return text
+        except Exception:
+            pass
+        return ''
+
+    def _format_stat_unit(self, value):
+        text = self._stringify_value(value)
+        if not text:
+            return ''
+        normalized = text.lower()
+        if normalized in ('-', 'none', 'unitless', 'dimensionless'):
+            return ''
+        return text
 
     def _collect_gwyddion_stats(self, data_field):
         getters = ['get_statistics', 'statistics_get', 'get_stats']
@@ -814,7 +1191,7 @@ class GwyddionBatchProcessor(object):
 
         scale_ratio = float(target_pixels) / float(xres)
         try:
-            settings.set_int32_by_name('/module/scale/interp', 4)
+            settings.set_int32_by_name('/module/scale/interp', 1)
         except Exception:
             pass
         try:

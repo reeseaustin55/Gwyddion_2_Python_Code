@@ -5,7 +5,7 @@ from __future__ import absolute_import
 import io
 import math
 import os
-import re
+import shutil
 import struct
 import subprocess
 import sys
@@ -14,7 +14,6 @@ import tempfile
 from .compat import text_type, to_native_path
 
 PNG_SIGNATURE = b'\x89PNG\r\n\x1a\n'
-FLOAT_PATTERN = re.compile(r'[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?')
 
 
 def _ensure_text(value):
@@ -61,6 +60,252 @@ def _calculate_max_shift_pixels(stabilization, frame_width):
     if percent <= 0:
         return None
     return max(0.0, (percent / 100.0) * float(frame_width))
+
+
+def _determine_detection_geometry(width, height):
+    if width is None or height is None or width <= 0 or height <= 0:
+        return None, None, None
+    max_width = 256
+    target_width = min(max_width, int(width))
+    if target_width <= 0:
+        target_width = int(width)
+    if target_width <= 0:
+        target_width = 1
+    scale_ratio = float(target_width) / float(width)
+    target_height = int(round(float(height) * scale_ratio))
+    if target_height <= 0:
+        target_height = 1
+    if target_width == width and target_height == height:
+        scale_filter = None
+    else:
+        scale_filter = 'scale=%d:%d' % (target_width, target_height)
+    return target_width, target_height, scale_filter
+
+
+def _load_frame_bytes(path, ffmpeg_path, width, height, scale_filter=None):
+    if width is None or height is None or width <= 0 or height <= 0:
+        raise ValueError('Invalid frame dimensions for %s' % path)
+    command = [
+        to_native_path(ffmpeg_path),
+        '-v', 'error',
+        '-i', to_native_path(path),
+    ]
+    if scale_filter:
+        command.extend(['-vf', scale_filter])
+    command.extend(['-f', 'rawvideo', '-pix_fmt', 'gray', '-'])
+    data = subprocess.check_output(command)
+    expected = int(width) * int(height)
+    if len(data) < expected:
+        raise ValueError('Incomplete raw frame from ffmpeg for %s' % path)
+    if len(data) > expected:
+        data = data[:expected]
+    return bytearray(data)
+
+
+def _sum_abs_diff(reference, frame, width, height, dx, dy, best_score=None):
+    x_start = max(0, dx)
+    x_end = min(width, width + dx)
+    y_start = max(0, dy)
+    y_end = min(height, height + dy)
+    if x_end <= x_start or y_end <= y_start:
+        return None
+    stride = width
+    total = 0
+    for y in range(y_start, y_end):
+        ref_index = y * stride + x_start
+        frame_index = (y - dy) * stride + (x_start - dx)
+        row_length = x_end - x_start
+        for offset in range(row_length):
+            total += abs(reference[ref_index + offset] - frame[frame_index + offset])
+            if best_score is not None and total >= best_score:
+                return total
+    return total
+
+
+def _find_best_translation(reference, frame, width, height, search_radius,
+                            center_dx=0, center_dy=0, max_allowed=None):
+    if search_radius is None or search_radius < 0:
+        search_radius = 0
+    if max_allowed is not None:
+        try:
+            max_allowed = int(math.floor(max_allowed))
+        except Exception:
+            max_allowed = None
+        if max_allowed is not None and max_allowed < 0:
+            max_allowed = 0
+    center_dx = int(round(center_dx))
+    center_dy = int(round(center_dy))
+    radius = int(math.ceil(search_radius))
+    best_score = None
+    best_dx = 0
+    best_dy = 0
+    dx_min = center_dx - radius
+    dx_max = center_dx + radius
+    dy_min = center_dy - radius
+    dy_max = center_dy + radius
+    if max_allowed is not None:
+        dx_min = max(dx_min, -max_allowed)
+        dx_max = min(dx_max, max_allowed)
+        dy_min = max(dy_min, -max_allowed)
+        dy_max = min(dy_max, max_allowed)
+    for dy in range(dy_min, dy_max + 1):
+        for dx in range(dx_min, dx_max + 1):
+            diff = _sum_abs_diff(reference, frame, width, height, dx, dy, best_score)
+            if diff is None:
+                continue
+            if best_score is None or diff < best_score:
+                best_score = diff
+                best_dx = dx
+                best_dy = dy
+    return best_dx, best_dy
+
+
+def _estimate_frame_translations(image_paths, ffmpeg_path, width, height,
+                                 max_shift_px, logger=None):
+    if not image_paths:
+        return []
+    detection_width, detection_height, scale_filter = _determine_detection_geometry(width, height)
+    if detection_width is None or detection_height is None:
+        return []
+
+    try:
+        prev_small = _load_frame_bytes(image_paths[0], ffmpeg_path,
+                                       detection_width, detection_height,
+                                       scale_filter)
+        prev_full = _load_frame_bytes(image_paths[0], ffmpeg_path,
+                                      width, height, None)
+    except Exception as exc:
+        if logger:
+            logger.warning('Unable to load frame %s for stabilization: %s',
+                           image_paths[0], exc)
+        return []
+
+    translations = [(0, 0)]
+    cumulative_dx = 0
+    cumulative_dy = 0
+
+    if max_shift_px is not None:
+        coarse_limit = int(max(0, round(max_shift_px * float(detection_width) / float(width))))
+        fine_limit = int(max(0, round(max_shift_px)))
+    else:
+        coarse_limit = max(4, detection_width // 8)
+        fine_limit = None
+
+    fine_radius = 3
+    for path in image_paths[1:]:
+        try:
+            curr_small = _load_frame_bytes(path, ffmpeg_path,
+                                           detection_width, detection_height,
+                                           scale_filter)
+            curr_full = _load_frame_bytes(path, ffmpeg_path,
+                                          width, height, None)
+        except Exception as exc:
+            if logger:
+                logger.warning('Unable to load frame %s for stabilization: %s',
+                               path, exc)
+            return []
+
+        dx_small, dy_small = _find_best_translation(
+            prev_small, curr_small, detection_width, detection_height,
+            coarse_limit, center_dx=0, center_dy=0,
+            max_allowed=coarse_limit if max_shift_px is not None else None,
+        )
+        approx_dx = dx_small * (float(width) / float(detection_width))
+        approx_dy = dy_small * (float(height) / float(detection_height))
+
+        dx_full, dy_full = _find_best_translation(
+            prev_full, curr_full, width, height,
+            search_radius=fine_radius,
+            center_dx=approx_dx, center_dy=approx_dy,
+            max_allowed=fine_limit,
+        )
+
+        cumulative_dx += dx_full
+        cumulative_dy += dy_full
+        translations.append((cumulative_dx, cumulative_dy))
+
+        prev_small = curr_small
+        prev_full = curr_full
+
+    return translations
+
+
+def _compute_shared_crop(translations, width, height):
+    if not translations:
+        return None
+    dxs = [offset[0] for offset in translations]
+    dys = [offset[1] for offset in translations]
+    x_min = int(math.ceil(max(dxs)))
+    x_max = int(math.floor(min(width + dx for dx in dxs)))
+    y_min = int(math.ceil(max(dys)))
+    y_max = int(math.floor(min(height + dy for dy in dys)))
+    crop_w = x_max - x_min
+    crop_h = y_max - y_min
+    if crop_w <= 1 or crop_h <= 1:
+        return None
+    return x_min, y_min, crop_w, crop_h
+
+
+def _render_stabilized_frames(image_paths, ffmpeg_path, translations,
+                              crop_info, width, height):
+    x_min, y_min, crop_w, crop_h = crop_info
+    temp_dir = tempfile.mkdtemp(prefix='gwyddion_stabilized_')
+    stabilized_paths = []
+    for index, path in enumerate(image_paths):
+        dx, dy = translations[index]
+        crop_x = x_min - dx
+        crop_y = y_min - dy
+        crop_x = int(max(0, min(width - crop_w, crop_x)))
+        crop_y = int(max(0, min(height - crop_h, crop_y)))
+        output_path = os.path.join(temp_dir, 'frame_%06d.png' % index)
+        command = [
+            to_native_path(ffmpeg_path),
+            '-v', 'error',
+            '-y',
+            '-i', to_native_path(path),
+            '-vf', 'crop=%d:%d:%d:%d' % (crop_w, crop_h, crop_x, crop_y),
+            '-frames:v', '1',
+            to_native_path(output_path),
+        ]
+        subprocess.check_call(command)
+        stabilized_paths.append(output_path)
+    return temp_dir, stabilized_paths
+
+
+def _prepare_stabilized_sequence(image_paths, width, height, ffmpeg_path,
+                                 stabilization, logger=None):
+    if width is None or height is None:
+        return None
+    max_shift_px = _calculate_max_shift_pixels(stabilization, width)
+    translations = _estimate_frame_translations(
+        image_paths,
+        ffmpeg_path,
+        int(width),
+        int(height),
+        max_shift_px,
+        logger=logger,
+    )
+    if not translations:
+        return None
+    crop_info = _compute_shared_crop(translations, int(width), int(height))
+    if crop_info is None:
+        return None
+    temp_dir, stabilized_paths = _render_stabilized_frames(
+        image_paths,
+        ffmpeg_path,
+        translations,
+        crop_info,
+        int(width),
+        int(height),
+    )
+    return {
+        'paths': stabilized_paths,
+        'temp_dir': temp_dir,
+        'width': crop_info[2],
+        'height': crop_info[3],
+        'x_offset': crop_info[0],
+        'y_offset': crop_info[1],
+    }
 
 
 def _calculate_repeat_counts(durations, frame_count, default_duration, frame_rate):
@@ -134,106 +379,6 @@ def _probe_png_size(path):
         handle.close()
 
 
-def _parse_transforms(path):
-    """Parse vidstab transform file and return lists of dx, dy values."""
-    dxs = []
-    dys = []
-    dx_pattern = re.compile(r'dx\s*=\s*(%s)' % FLOAT_PATTERN.pattern)
-    dy_pattern = re.compile(r'dy\s*=\s*(%s)' % FLOAT_PATTERN.pattern)
-    handle = io.open(path, 'r', encoding='utf-8')
-    try:
-        for line in handle:
-            stripped = line.strip()
-            if not stripped or stripped.startswith('#'):
-                continue
-            dx_match = dx_pattern.search(stripped)
-            dy_match = dy_pattern.search(stripped)
-            if dx_match and dy_match:
-                dxs.append(float(dx_match.group(1)))
-                dys.append(float(dy_match.group(1)))
-                continue
-            parts = stripped.split(':', 1)
-            if len(parts) == 2:
-                payload = parts[1]
-            else:
-                payload = stripped
-            numbers = FLOAT_PATTERN.findall(payload)
-            if len(numbers) >= 3:
-                dxs.append(float(numbers[0]))
-                dys.append(float(numbers[1]))
-            elif len(numbers) >= 2:
-                dxs.append(float(numbers[-2]))
-                dys.append(float(numbers[-1]))
-    finally:
-        handle.close()
-    return dxs, dys
-
-
-def _compute_crop_region(dxs, dys, width, height, max_shift=None):
-    """Compute crop rectangle ensuring overlap between frames."""
-    if not dxs or not dys:
-        return None
-    if max_shift is not None and max_shift > 0:
-        limited_dxs = [max(-max_shift, min(max_shift, value)) for value in dxs]
-        limited_dys = [max(-max_shift, min(max_shift, value)) for value in dys]
-    else:
-        limited_dxs = dxs
-        limited_dys = dys
-    min_right = min(dx + float(width) for dx in limited_dxs)
-    min_bottom = min(dy + float(height) for dy in limited_dys)
-    max_left = max(max(dx, 0.0) for dx in limited_dxs)
-    max_top = max(max(dy, 0.0) for dy in limited_dys)
-    crop_width = int(math.floor(min_right) - int(math.ceil(max_left)))
-    crop_height = int(math.floor(min_bottom) - int(math.ceil(max_top)))
-    if crop_width <= 0 or crop_height <= 0:
-        return None
-    crop_x = int(math.ceil(max_left))
-    crop_y = int(math.ceil(max_top))
-    if crop_x < 0:
-        crop_x = 0
-    if crop_y < 0:
-        crop_y = 0
-    if crop_x + crop_width > width:
-        crop_width = width - crop_x
-    if crop_y + crop_height > height:
-        crop_height = height - crop_y
-    if crop_width <= 0 or crop_height <= 0:
-        return None
-    if crop_width % 2:
-        crop_width -= 1
-    if crop_height % 2:
-        crop_height -= 1
-    if crop_width <= 0 or crop_height <= 0:
-        return None
-    return crop_x, crop_y, crop_width, crop_height
-
-
-def _build_detect_filter(transform_path):
-    parts = [
-        'vidstabdetect',
-        'result=%s' % _escape_path(_ensure_text(transform_path)),
-        'shakiness=5',
-        'accuracy=9',
-        'stepsize=6',
-        'mincontrast=0.3',
-    ]
-    return ':'.join(parts)
-
-
-def _build_transform_filter(transform_path, max_shift=None):
-    parts = [
-        'vidstabtransform',
-        'input=%s' % _escape_path(_ensure_text(transform_path)),
-        'smoothing=15',
-        'optzoom=0',
-        'zoom=0',
-        'interpol=bicubic',
-    ]
-    if max_shift is not None and max_shift > 0:
-        parts.append('maxshift=%d' % int(round(max_shift)))
-    return ':'.join(parts)
-
-
 def stitch_images_to_video(image_paths, output_path, ffmpeg_path='ffmpeg',
                            frame_durations=None, frame_duration=None,
                            pixel_format='yuv420p', extra_args=None,
@@ -250,22 +395,65 @@ def stitch_images_to_video(image_paths, output_path, ffmpeg_path='ffmpeg',
         os.makedirs(directory)
 
     list_path = None
-    transform_path = None
     ensure_even_filter = None
     width = None
     height = None
+    stabilized_temp_dir = None
+
     try:
         first_path = image_paths[0]
         width, height = _probe_png_size(first_path)
-        if width % 2 or height % 2:
-            ensure_even_filter = 'scale=ceil(iw/2)*2:ceil(ih/2)*2'
-            if logger:
-                logger.info('Ensuring even frame dimensions for video output (%dx%d)',
-                            width, height)
     except Exception as exc:
-        ensure_even_filter = None
         if logger:
-            logger.debug('Unable to read image dimensions for even scaling: %s', exc)
+            logger.debug('Unable to read image dimensions for stabilization planning: %s', exc)
+        width = None
+        height = None
+
+    if stabilization and getattr(stabilization, 'enabled', False):
+        if _contains_filter(extra_args):
+            raise ValueError('Custom ffmpeg filter arguments are not compatible with stabilization')
+        stabilization_result = None
+        stabilization_failed = False
+        try:
+            stabilization_result = _prepare_stabilized_sequence(
+                image_paths,
+                width,
+                height,
+                ffmpeg_path,
+                stabilization,
+                logger=logger,
+            )
+        except Exception as exc:
+            if logger:
+                logger.warning('Stabilization failed (%s); continuing without stabilization.', exc)
+            stabilization_failed = True
+        if stabilization_result:
+            if logger:
+                logger.info(
+                    'Applying translation-based stabilization; cropped frame size %dx%d',
+                    stabilization_result['width'],
+                    stabilization_result['height'],
+                )
+            stabilized_temp_dir = stabilization_result['temp_dir']
+            image_paths = stabilization_result['paths']
+            width = stabilization_result.get('width', width)
+            height = stabilization_result.get('height', height)
+        elif logger and not stabilization_failed:
+            logger.warning('Stabilization did not produce a usable crop; continuing without stabilization.')
+
+    if (width is None or height is None) and image_paths:
+        try:
+            width, height = _probe_png_size(image_paths[0])
+        except Exception as exc:
+            if logger:
+                logger.debug('Unable to read image dimensions for even scaling: %s', exc)
+            width = None
+            height = None
+
+    if width is not None and height is not None and (width % 2 or height % 2):
+        ensure_even_filter = 'scale=ceil(iw/2)*2:ceil(ih/2)*2'
+        if logger:
+            logger.info('Ensuring even frame dimensions for video output (%dx%d)', width, height)
 
     try:
         list_handle, list_path = tempfile.mkstemp(prefix='gwyddion_frames_', suffix='.txt')
@@ -345,55 +533,6 @@ def stitch_images_to_video(image_paths, output_path, ffmpeg_path='ffmpeg',
         ]
 
         filters = []
-        if stabilization and getattr(stabilization, 'enabled', False):
-            if _contains_filter(extra_args):
-                raise ValueError('Custom ffmpeg filter arguments are not compatible with stabilization')
-            transform_handle, transform_path = tempfile.mkstemp(prefix='gwyddion_transforms_', suffix='.trf')
-            os.close(transform_handle)
-
-            try:
-                detect_filter = _build_detect_filter(transform_path)
-                detect_cmd = [
-                    to_native_path(ffmpeg_path),
-                    '-y',
-                    '-f', 'concat',
-                    '-safe', '0',
-                    '-i', to_native_path(list_path),
-                    '-vf', detect_filter,
-                    '-f', 'null',
-                    '-',
-                ]
-                if logger:
-                    logger.info('Analyzing frame drift for stabilization')
-                subprocess.check_call(detect_cmd)
-
-                max_shift_px = _calculate_max_shift_pixels(stabilization, width)
-                crop_rect = None
-                if width is not None and height is not None:
-                    try:
-                        dxs, dys = _parse_transforms(transform_path)
-                        crop_rect = _compute_crop_region(dxs, dys, width, height, max_shift=max_shift_px)
-                    except Exception as exc:
-                        crop_rect = None
-                        if logger:
-                            logger.warning('Unable to compute crop region: %s', exc)
-
-                filters.append(_build_transform_filter(transform_path, max_shift=max_shift_px))
-                if crop_rect:
-                    crop_x, crop_y, crop_w, crop_h = crop_rect
-                    if logger:
-                        logger.info('Cropping stabilized video to %dx%d at %d,%d', crop_w, crop_h, crop_x, crop_y)
-                    filters.append('crop=%d:%d:%d:%d' % (crop_w, crop_h, crop_x, crop_y))
-            except Exception as exc:
-                if logger:
-                    logger.warning('Stabilization failed (%s); continuing without stabilization.', exc)
-                if transform_path and os.path.exists(transform_path):
-                    try:
-                        os.remove(transform_path)
-                    except OSError:
-                        pass
-                transform_path = None
-
         if ensure_even_filter:
             filters.append(ensure_even_filter)
 
@@ -430,8 +569,8 @@ def stitch_images_to_video(image_paths, output_path, ffmpeg_path='ffmpeg',
                 os.remove(list_path)
             except OSError:
                 pass
-        if transform_path and os.path.exists(transform_path):
+        if stabilized_temp_dir and os.path.isdir(stabilized_temp_dir):
             try:
-                os.remove(transform_path)
+                shutil.rmtree(stabilized_temp_dir)
             except OSError:
                 pass

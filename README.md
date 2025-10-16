@@ -125,21 +125,22 @@ pure-duration behaviour or pick a different constant rate.  Enabling
 DOWN scan videos generated from alternating frames for both the processed data
 and any ACF imagery.
 
-Enable the new stabilization option to perform a two-pass `ffmpeg` run using
-``vidstab`` filters.  The detection pass measures per-frame drift, the
-transformation pass applies the correction, and the output is cropped to the
-shared image area to avoid edge artifacts.  The CLI now pairs ``--stabilize``
-with a single ``--stabilize-max-percent`` flag (mirrored in the GUI) to specify
-the maximum frame-to-frame displacement as a percentage of the frame width;
-internal defaults handle the other filter parameters.
+Enable the stabilization option to analyse consecutive frames directly inside
+the Python pipeline.  The processor downsamples each image, subtracts adjacent
+pairs to search for the translation with the smallest absolute difference,
+accumulates the measured offsets, and crops the shared overlap so the exported
+video only includes regions present in every frame.  The CLI pairs
+``--stabilize`` with a single ``--stabilize-max-percent`` flag (mirrored in the
+GUI) to specify the maximum frame-to-frame displacement as a percentage of the
+frame width; everything else is handled automatically.
 
 When statistics export is enabled the processor calls Gwyddion's own statistical
 quantities module and writes the complete set of reported values (Sa, Sq, hybrid
-metrics, scan-line discrepancy, and more) to a companion `*_stats.txt` file in
-the channel directory.  ACF generation adds an additional `*_acf.png` rendered
-from the processed data so each selected channel produces both the cleaned
-height image and its autocorrelation counterpart, organised beneath the channel
-folder.
+metrics, scan-line discrepancy, and more) — including their reported units — to
+a companion `*_stats.txt` file in the channel directory.  ACF generation adds an
+additional `*_acf.png` rendered from the processed data so each selected channel
+produces both the cleaned height image and its autocorrelation counterpart,
+organised beneath the channel folder.
 
 ### Example scripts
 
