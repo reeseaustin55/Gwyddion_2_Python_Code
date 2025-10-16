@@ -4,6 +4,7 @@ from __future__ import absolute_import
 
 import logging
 import os
+from collections import defaultdict
 from contextlib import contextmanager
 
 from .compat import binary_type, text_type, to_native_path
@@ -507,6 +508,189 @@ class GwyddionBatchProcessor(object):
 
         return {}
 
+    def _stat_container_to_mapping(self, container, prefix=None, seen=None):
+        if container is None:
+            return {}
+        if isinstance(container, (list, tuple, dict)):
+            return {}
+        if seen is None:
+            seen = set()
+        container_id = id(container)
+        if container_id in seen:
+            return {}
+        seen.add(container_id)
+        keys = self._container_keys(container)
+        if not keys:
+            return {}
+        flat_values = {}
+        grouped = defaultdict(dict)
+        for key in keys:
+            text_key = self._stringify_value(key)
+            if not text_key:
+                continue
+            try:
+                value = self._container_fetch(container, key)
+            except Exception:
+                continue
+            if value is None:
+                continue
+            normalized_key = text_key.strip('/')
+            if not normalized_key:
+                continue
+            segments = [self._stringify_value(part) for part in normalized_key.split('/') if part]
+            if not segments:
+                segments = [normalized_key]
+            leaf = segments[-1].lower()
+            base_path = '/'.join(segments[:-1])
+            if leaf in ('value', 'values', 'val', 'unit', 'units', 'label', 'name', 'text'):
+                grouped[base_path][leaf] = value
+                continue
+            if self._is_container_like(value):
+                nested_prefix = '/'.join(segments)
+                nested = self._stat_container_to_mapping(value, prefix=nested_prefix, seen=seen)
+                for nested_label, nested_value in nested.items():
+                    flat_values[nested_label] = nested_value
+                continue
+            if isinstance(value, (list, tuple)):
+                nested = self._decode_statquant_sequence(value)
+                if nested:
+                    nested_prefix = '/'.join(segments)
+                    for nested_label, nested_value in nested.items():
+                        combined_label = self._combine_stat_labels(nested_prefix, nested_label)
+                        flat_values[combined_label] = nested_value
+                    continue
+            combined_label = self._combine_stat_labels('/'.join(segments), None)
+            if combined_label:
+                value_text = self._format_stat_value(value)
+                if value_text:
+                    flat_values[combined_label] = value_text
+        for path, details in grouped.items():
+            label_candidate = details.get('label') or details.get('name') or details.get('text')
+            combined_label = self._combine_stat_labels(path, label_candidate)
+            value_obj = details.get('value')
+            if value_obj is None:
+                value_obj = details.get('values')
+            unit_obj = details.get('unit')
+            if unit_obj is None:
+                unit_obj = details.get('units')
+            value_text = self._format_stat_value(value_obj)
+            unit_text = self._format_stat_unit(unit_obj)
+            if value_text:
+                if unit_text:
+                    flat_values[combined_label] = '%s %s' % (value_text, unit_text)
+                else:
+                    flat_values[combined_label] = value_text
+        if prefix:
+            prefixed = {}
+            for key, value in flat_values.items():
+                prefixed[self._combine_stat_labels(prefix, key)] = value
+            return prefixed
+        return flat_values
+
+    def _combine_stat_labels(self, prefix, label):
+        prefix_text = self._stringify_value(prefix) if prefix is not None else ''
+        label_text = self._stringify_value(label) if label is not None else ''
+        prefix_parts = [part for part in prefix_text.split('/') if part]
+        if label_text:
+            leaf = label_text
+        elif prefix_parts:
+            leaf = prefix_parts[-1]
+            prefix_parts = prefix_parts[:-1]
+        else:
+            leaf = ''
+        if prefix_parts:
+            prefix_display = ' / '.join(prefix_parts)
+            if leaf:
+                return '%s: %s' % (prefix_display, leaf)
+            return prefix_display
+        return leaf
+
+    def _is_container_like(self, value):
+        if value is None:
+            return False
+        if isinstance(value, (list, tuple, dict)):
+            return False
+        for name in ('get_value_by_name', 'get_object_by_name', 'keys_by_name'):
+            if getattr(value, name, None) is not None:
+                return True
+        return False
+
+    def _container_keys(self, container):
+        key_sources = [
+            ('keys_by_name', ('',)),
+            ('keys', ()),
+            ('list_keys', ()),
+        ]
+        for method_name, args in key_sources:
+            method = getattr(container, method_name, None)
+            if method is None:
+                continue
+            try:
+                result = method(*args)
+            except TypeError:
+                try:
+                    result = method()
+                except Exception:
+                    continue
+            except Exception:
+                continue
+            if isinstance(result, (list, tuple, set)):
+                keys = list(result)
+            else:
+                try:
+                    keys = list(result)
+                except Exception:
+                    continue
+            if keys:
+                return keys
+        iterator = getattr(container, '__iter__', None)
+        if iterator is not None:
+            try:
+                keys = list(iterator())
+                if keys:
+                    return keys
+            except TypeError:
+                try:
+                    keys = list(container)
+                    if keys:
+                        return keys
+                except Exception:
+                    pass
+            except Exception:
+                pass
+        return []
+
+    def _container_fetch(self, container, key):
+        getter_names = [
+            'get_value_by_name',
+            'get_object_by_name',
+            'get_by_name',
+            'get',
+        ]
+        for name in getter_names:
+            getter = getattr(container, name, None)
+            if getter is None:
+                continue
+            try:
+                return getter(key)
+            except Exception:
+                continue
+        try:
+            return container[key]
+        except Exception:
+            pass
+        gwy = getattr(self, 'gwy', None)
+        if gwy is not None:
+            for func_name in ('gwy_container_get_object_by_name', 'gwy_container_get_value_by_name'):
+                func = getattr(gwy, func_name, None)
+                if func is None:
+                    continue
+                try:
+                    return func(container, key)
+                except Exception:
+                    continue
+        return None
+
     def _extract_statistical_quantities_from_container(self, container, channel_id):
         gwy = self.gwy
         getter = getattr(gwy, 'gwy_container_get_object_by_name', None)
@@ -641,6 +825,9 @@ class GwyddionBatchProcessor(object):
     def _decode_statistical_quantities_object(self, obj):
         if not obj:
             return {}
+        container_mapping = self._stat_container_to_mapping(obj)
+        if container_mapping:
+            return container_mapping
         mapping = {}
         if isinstance(obj, (list, tuple)):
             mapping = self._decode_statquant_sequence(obj)
@@ -962,6 +1149,9 @@ class GwyddionBatchProcessor(object):
     def _normalize_stats_object(self, stats_obj):
         if not stats_obj:
             return {}
+        container_mapping = self._stat_container_to_mapping(stats_obj)
+        if container_mapping:
+            return container_mapping
         if isinstance(stats_obj, dict):
             return self._stringify_stats(stats_obj)
         to_dict = getattr(stats_obj, 'to_dict', None)

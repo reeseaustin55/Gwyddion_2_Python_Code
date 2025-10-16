@@ -11,6 +11,8 @@ import subprocess
 import sys
 import tempfile
 
+import numpy as np
+
 from .compat import text_type, to_native_path
 
 PNG_SIGNATURE = b'\x89PNG\r\n\x1a\n'
@@ -99,57 +101,90 @@ def _load_frame_bytes(path, ffmpeg_path, width, height, scale_filter=None):
         raise ValueError('Incomplete raw frame from ffmpeg for %s' % path)
     if len(data) > expected:
         data = data[:expected]
-    return bytearray(data)
+    array = np.frombuffer(data, dtype=np.uint8, count=expected)
+    return array.copy().reshape((int(height), int(width)))
 
 
 def _sum_abs_diff(reference, frame, width, height, dx, dy, best_score=None):
+    dx = int(dx)
+    dy = int(dy)
+    width = int(width)
+    height = int(height)
     x_start = max(0, dx)
     x_end = min(width, width + dx)
     y_start = max(0, dy)
     y_end = min(height, height + dy)
     if x_end <= x_start or y_end <= y_start:
         return None
-    stride = width
-    total = 0
-    for y in range(y_start, y_end):
-        ref_index = y * stride + x_start
-        frame_index = (y - dy) * stride + (x_start - dx)
-        row_length = x_end - x_start
-        for offset in range(row_length):
-            total += abs(reference[ref_index + offset] - frame[frame_index + offset])
-            if best_score is not None and total >= best_score:
-                return total
+    ref_slice = reference[y_start:y_end, x_start:x_end]
+    frame_slice = frame[(y_start - dy):(y_end - dy), (x_start - dx):(x_end - dx)]
+    if ref_slice.size == 0 or frame_slice.size == 0:
+        return None
+    diff = np.abs(ref_slice.astype(np.int32) - frame_slice.astype(np.int32))
+    total = float(diff.sum())
+    if best_score is not None and total >= best_score:
+        return total
     return total
 
 
-def _find_best_translation(reference, frame, width, height, search_radius,
-                            center_dx=0, center_dy=0, max_allowed=None):
-    if search_radius is None or search_radius < 0:
-        search_radius = 0
+def _phase_correlation_translation(reference, frame, max_allowed=None):
+    if reference is None or frame is None:
+        return 0, 0
+    ref_array = np.asarray(reference, dtype=np.float32)
+    frame_array = np.asarray(frame, dtype=np.float32)
+    if ref_array.size == 0 or frame_array.size == 0:
+        return 0, 0
+    ref_array = ref_array - ref_array.mean()
+    frame_array = frame_array - frame_array.mean()
+    fft_ref = np.fft.fft2(ref_array)
+    fft_frame = np.fft.fft2(frame_array)
+    cross_power = fft_ref * np.conj(fft_frame)
+    magnitude = np.abs(cross_power)
+    magnitude[magnitude == 0] = 1.0
+    cross_power /= magnitude
+    correlation = np.fft.ifft2(cross_power)
+    correlation = np.abs(correlation)
+    max_pos = np.unravel_index(np.argmax(correlation), correlation.shape)
+    dy, dx = max_pos
+    height, width = reference.shape
+    if dx > width // 2:
+        dx -= width
+    if dy > height // 2:
+        dy -= height
     if max_allowed is not None:
         try:
-            max_allowed = int(math.floor(max_allowed))
+            limit = int(max_allowed)
+            dx = int(max(-limit, min(limit, dx)))
+            dy = int(max(-limit, min(limit, dy)))
         except Exception:
-            max_allowed = None
-        if max_allowed is not None and max_allowed < 0:
-            max_allowed = 0
-    center_dx = int(round(center_dx))
-    center_dy = int(round(center_dy))
-    radius = int(math.ceil(search_radius))
-    best_score = None
-    best_dx = 0
-    best_dy = 0
-    dx_min = center_dx - radius
-    dx_max = center_dx + radius
-    dy_min = center_dy - radius
-    dy_max = center_dy + radius
+            pass
+    return int(dx), int(dy)
+
+
+def _refine_translation(reference, frame, approx_dx, approx_dy, max_allowed=None,
+                        window_radius=3):
+    if reference is None or frame is None:
+        return int(round(approx_dx)), int(round(approx_dy))
+    height, width = reference.shape
+    center_dx = int(round(approx_dx))
+    center_dy = int(round(approx_dy))
+    if window_radius is None or window_radius < 1:
+        window_radius = 1
+    limit = None
     if max_allowed is not None:
-        dx_min = max(dx_min, -max_allowed)
-        dx_max = min(dx_max, max_allowed)
-        dy_min = max(dy_min, -max_allowed)
-        dy_max = min(dy_max, max_allowed)
-    for dy in range(dy_min, dy_max + 1):
-        for dx in range(dx_min, dx_max + 1):
+        try:
+            limit = int(max_allowed)
+        except Exception:
+            limit = None
+    best_dx = center_dx
+    best_dy = center_dy
+    best_score = None
+    for dy in range(center_dy - window_radius, center_dy + window_radius + 1):
+        if limit is not None and abs(dy) > limit:
+            continue
+        for dx in range(center_dx - window_radius, center_dx + window_radius + 1):
+            if limit is not None and abs(dx) > limit:
+                continue
             diff = _sum_abs_diff(reference, frame, width, height, dx, dy, best_score)
             if diff is None:
                 continue
@@ -157,7 +192,10 @@ def _find_best_translation(reference, frame, width, height, search_radius,
                 best_score = diff
                 best_dx = dx
                 best_dy = dy
-    return best_dx, best_dy
+    if limit is not None:
+        best_dx = max(-limit, min(limit, best_dx))
+        best_dy = max(-limit, min(limit, best_dy))
+    return int(best_dx), int(best_dy)
 
 
 def _estimate_frame_translations(image_paths, ffmpeg_path, width, height,
@@ -185,13 +223,18 @@ def _estimate_frame_translations(image_paths, ffmpeg_path, width, height,
     cumulative_dy = 0
 
     if max_shift_px is not None:
-        coarse_limit = int(max(0, round(max_shift_px * float(detection_width) / float(width))))
-        fine_limit = int(max(0, round(max_shift_px)))
+        coarse_limit = int(round(max_shift_px * float(detection_width) / float(width)))
+        fine_limit = int(round(max_shift_px))
+        if coarse_limit <= 0:
+            coarse_limit = None
+        if fine_limit <= 0:
+            fine_limit = None
     else:
-        coarse_limit = max(4, detection_width // 8)
+        coarse_limit = None
         fine_limit = None
 
-    fine_radius = 3
+    ratio_x = float(width) / float(detection_width)
+    ratio_y = float(height) / float(detection_height)
     for path in image_paths[1:]:
         try:
             curr_small = _load_frame_bytes(path, ffmpeg_path,
@@ -205,19 +248,24 @@ def _estimate_frame_translations(image_paths, ffmpeg_path, width, height,
                                path, exc)
             return []
 
-        dx_small, dy_small = _find_best_translation(
-            prev_small, curr_small, detection_width, detection_height,
-            coarse_limit, center_dx=0, center_dy=0,
-            max_allowed=coarse_limit if max_shift_px is not None else None,
+        dx_small, dy_small = _phase_correlation_translation(
+            prev_small,
+            curr_small,
+            max_allowed=coarse_limit,
         )
-        approx_dx = dx_small * (float(width) / float(detection_width))
-        approx_dy = dy_small * (float(height) / float(detection_height))
+        approx_dx = dx_small * ratio_x
+        approx_dy = dy_small * ratio_y
 
-        dx_full, dy_full = _find_best_translation(
-            prev_full, curr_full, width, height,
-            search_radius=fine_radius,
-            center_dx=approx_dx, center_dy=approx_dy,
+        window_radius = 3
+        if fine_limit is not None and fine_limit < window_radius:
+            window_radius = max(1, fine_limit)
+        dx_full, dy_full = _refine_translation(
+            prev_full,
+            curr_full,
+            approx_dx,
+            approx_dy,
             max_allowed=fine_limit,
+            window_radius=window_radius,
         )
 
         cumulative_dx += dx_full
