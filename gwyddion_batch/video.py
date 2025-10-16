@@ -179,19 +179,58 @@ def _refine_translation(reference, frame, approx_dx, approx_dy, max_allowed=None
     best_dx = center_dx
     best_dy = center_dy
     best_score = None
-    for dy in range(center_dy - window_radius, center_dy + window_radius + 1):
-        if limit is not None and abs(dy) > limit:
-            continue
-        for dx in range(center_dx - window_radius, center_dx + window_radius + 1):
-            if limit is not None and abs(dx) > limit:
+    visited = set()
+    current_radius = window_radius
+    anchor_dx = center_dx
+    anchor_dy = center_dy
+    if limit is not None:
+        max_radius = max(1, limit)
+    else:
+        max_radius = max(1, min(max(width, height) // 2, 512))
+
+    while True:
+        improved = False
+        start_y = anchor_dy - current_radius
+        end_y = anchor_dy + current_radius
+        start_x = anchor_dx - current_radius
+        end_x = anchor_dx + current_radius
+        for dy in range(start_y, end_y + 1):
+            if limit is not None and abs(dy) > limit:
                 continue
-            diff = _sum_abs_diff(reference, frame, width, height, dx, dy, best_score)
-            if diff is None:
-                continue
-            if best_score is None or diff < best_score:
-                best_score = diff
-                best_dx = dx
-                best_dy = dy
+            for dx in range(start_x, end_x + 1):
+                if limit is not None and abs(dx) > limit:
+                    continue
+                key = (dx, dy)
+                if key in visited:
+                    continue
+                visited.add(key)
+                diff = _sum_abs_diff(reference, frame, width, height, dx, dy, best_score)
+                if diff is None:
+                    continue
+                if best_score is None or diff < best_score:
+                    best_score = diff
+                    best_dx = dx
+                    best_dy = dy
+                    improved = True
+        if not improved:
+            break
+        if limit is not None and (abs(best_dx) >= limit or abs(best_dy) >= limit):
+            break
+        boundary_hit = (
+            abs(best_dx - anchor_dx) >= current_radius or
+            abs(best_dy - anchor_dy) >= current_radius
+        )
+        if not boundary_hit:
+            break
+        if current_radius >= max_radius:
+            break
+        new_radius = min(current_radius * 2, max_radius)
+        if new_radius == current_radius:
+            break
+        anchor_dx = best_dx
+        anchor_dy = best_dy
+        current_radius = new_radius
+
     if limit is not None:
         best_dx = max(-limit, min(limit, best_dx))
         best_dy = max(-limit, min(limit, best_dy))

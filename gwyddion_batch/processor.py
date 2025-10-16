@@ -587,12 +587,43 @@ class GwyddionBatchProcessor(object):
             return prefixed
         return flat_values
 
+    def _normalize_stat_segment(self, segment):
+        text = self._stringify_value(segment)
+        if not text:
+            return ''
+        text = text.strip()
+        if not text:
+            return ''
+        if text.isdigit():
+            return ''
+        canonical = text.replace('_', ' ')
+        canonical_lower = canonical.lower().replace('-', ' ')
+        ignored = {
+            'module', 'data', 'statistics', 'statistical quantities',
+            'statistical-quantities', 'statquant', 'results', 'channels',
+            'channel', 'values', 'value', 'units', 'unit', 'text', 'labels',
+            'names', 'quantities',
+        }
+        if canonical_lower in ignored:
+            return ''
+        canonical = canonical.strip()
+        if not canonical:
+            return ''
+        if canonical == canonical.lower():
+            canonical = canonical.title()
+        return canonical
+
     def _combine_stat_labels(self, prefix, label):
         prefix_text = self._stringify_value(prefix) if prefix is not None else ''
         label_text = self._stringify_value(label) if label is not None else ''
-        prefix_parts = [part for part in prefix_text.split('/') if part]
-        if label_text:
-            leaf = label_text
+        prefix_parts = []
+        for part in prefix_text.split('/'):
+            normalized = self._normalize_stat_segment(part)
+            if normalized:
+                prefix_parts.append(normalized)
+        normalized_label = self._normalize_stat_segment(label_text) if label_text else ''
+        if normalized_label:
+            leaf = normalized_label
         elif prefix_parts:
             leaf = prefix_parts[-1]
             prefix_parts = prefix_parts[:-1]
@@ -750,12 +781,6 @@ class GwyddionBatchProcessor(object):
             'get_length',
             'get_size',
         ]
-        value_getters = [
-            ('get_value', True),
-            ('get', True),
-            ('get_cell', True),
-            ('value', True),
-        ]
 
         count = None
         for name in length_getters:
@@ -777,50 +802,60 @@ class GwyddionBatchProcessor(object):
 
         stats = {}
         for row in range(count):
-            name_value = None
-            value_value = None
-            unit_value = None
-            for getter_name, expects_index in value_getters:
-                getter = getattr(table, getter_name, None)
-                if getter is None:
-                    continue
-                try:
-                    if expects_index:
-                        result = getter(row)
-                    else:
-                        result = getter()
-                except TypeError:
-                    try:
-                        result = getter(row, 0)
-                    except Exception:
-                        continue
-                except Exception:
-                    continue
-                if isinstance(result, (list, tuple)):
-                    if len(result) >= 1 and name_value is None:
-                        name_value = result[0]
-                    if len(result) >= 2 and value_value is None:
-                        value_value = result[1]
-                    if len(result) >= 3 and unit_value is None:
-                        unit_value = result[2]
-                    if name_value is not None and value_value is not None:
-                        break
-                elif name_value is None:
-                    name_value = result
-                elif value_value is None:
-                    value_value = result
-                elif unit_value is None:
-                    unit_value = result
+            name_value = self._table_get_cell(table, row, 0)
+            value_value = self._table_get_cell(table, row, 1)
+            unit_value = self._table_get_cell(table, row, 2)
             label = self._stringify_value(name_value)
             if not label:
                 continue
             value_text = self._format_stat_value(value_value)
             unit_text = self._format_stat_unit(unit_value)
+            if not value_text and not unit_text:
+                continue
             if unit_text:
                 stats[label] = '%s %s' % (value_text, unit_text)
             else:
                 stats[label] = value_text
         return stats
+
+    def _table_get_cell(self, table, row, column):
+        cell_getters = [
+            'get_value',
+            'get_cell',
+            'value',
+            'get',
+        ]
+        for name in cell_getters:
+            getter = getattr(table, name, None)
+            if getter is None:
+                continue
+            try:
+                return getter(row, column)
+            except TypeError:
+                try:
+                    return getter(row)
+                except TypeError:
+                    try:
+                        return getter(row, column, 0)
+                    except Exception:
+                        continue
+                except Exception:
+                    continue
+            except Exception:
+                continue
+        row_getters = ['get_row', 'row', 'get_row_values', 'get_values']
+        for name in row_getters:
+            getter = getattr(table, name, None)
+            if getter is None:
+                continue
+            try:
+                result = getter(row)
+            except Exception:
+                continue
+            sequence = self._sequence_from_object(result)
+            if sequence and column < len(sequence):
+                return sequence[column]
+        return None
 
     def _decode_statistical_quantities_object(self, obj):
         if not obj:
