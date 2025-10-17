@@ -50,6 +50,134 @@ def _write_png(path, array):
         _write_png_chunk(handle, b'IEND', b'')
 
 
+def _paeth_predictor(a, b, c):
+    p = a + b - c
+    pa = abs(p - a)
+    pb = abs(p - b)
+    pc = abs(p - c)
+    if pa <= pb and pa <= pc:
+        return a
+    if pb <= pc:
+        return b
+    return c
+
+
+def _apply_png_filter(filter_type, data, prev, bpp):
+    if filter_type == 0:
+        return data
+    result = bytearray(len(data))
+    if filter_type == 1:
+        for i, value in enumerate(data):
+            left = result[i - bpp] if i >= bpp else 0
+            result[i] = (value + left) & 0xFF
+        return result
+    if filter_type == 2:
+        for i, value in enumerate(data):
+            up = prev[i] if prev is not None else 0
+            result[i] = (value + up) & 0xFF
+        return result
+    if filter_type == 3:
+        for i, value in enumerate(data):
+            left = result[i - bpp] if i >= bpp else 0
+            up = prev[i] if prev is not None else 0
+            result[i] = (value + ((left + up) // 2)) & 0xFF
+        return result
+    if filter_type == 4:
+        for i, value in enumerate(data):
+            left = result[i - bpp] if i >= bpp else 0
+            up = prev[i] if prev is not None else 0
+            up_left = prev[i - bpp] if prev is not None and i >= bpp else 0
+            result[i] = (value + _paeth_predictor(left, up, up_left)) & 0xFF
+        return result
+    raise ValueError('Unsupported PNG filter %d' % filter_type)
+
+
+def _read_png_gray(path):
+    handle = open(path, 'rb')
+    try:
+        signature = handle.read(8)
+        if signature != PNG_SIGNATURE:
+            raise ValueError('Only grayscale PNG images are supported: %s' % path)
+        width = height = None
+        bit_depth = None
+        color_type = None
+        interlace = 0
+        idat_chunks = []
+        while True:
+            length_bytes = handle.read(4)
+            if len(length_bytes) != 4:
+                break
+            length = struct.unpack('>I', length_bytes)[0]
+            chunk_type = handle.read(4)
+            data = handle.read(length)
+            handle.read(4)  # CRC
+            if chunk_type == b'IHDR':
+                width, height, bit_depth, color_type, _, _, interlace = struct.unpack('>IIBBBBB', data)
+            elif chunk_type == b'IDAT':
+                idat_chunks.append(data)
+            elif chunk_type == b'IEND':
+                break
+        if width is None or height is None:
+            raise ValueError('PNG %s is missing IHDR data' % path)
+        if interlace != 0:
+            raise ValueError('Interlaced PNG images are not supported: %s' % path)
+        if color_type not in (0, 4):
+            raise ValueError('Unsupported PNG color type %d in %s' % (color_type, path))
+        if bit_depth not in (8, 16):
+            raise ValueError('Unsupported PNG bit depth %d in %s' % (bit_depth, path))
+        channels = 1 if color_type == 0 else 2
+        bpp = max(1, (bit_depth * channels + 7) // 8)
+        decompressed = zlib.decompress(b''.join(idat_chunks))
+        row_bytes = ((bit_depth * channels * width) + 7) // 8
+        expected = height * (row_bytes + 1)
+        if len(decompressed) < expected:
+            raise ValueError('Incomplete pixel data in %s' % path)
+        rows = []
+        offset = 0
+        prev_row = None
+        for _ in range(height):
+            filter_type = decompressed[offset]
+            offset += 1
+            raw = bytearray(decompressed[offset:offset + row_bytes])
+            offset += row_bytes
+            recon = _apply_png_filter(filter_type, raw, prev_row, bpp)
+            rows.append(bytes(recon))
+            prev_row = recon
+        if bit_depth == 16:
+            dtype = '>u2'
+            row_arrays = [np.frombuffer(row, dtype=dtype).reshape(width, channels) for row in rows]
+            stacked = np.stack(row_arrays, axis=0)
+            grayscale = stacked[..., 0]
+            grayscale = (grayscale / 257.0).astype(np.uint8)
+        else:
+            row_arrays = [np.frombuffer(row, dtype=np.uint8).reshape(width, channels) for row in rows]
+            stacked = np.stack(row_arrays, axis=0)
+            grayscale = stacked[..., 0]
+        return grayscale.astype(np.uint8)
+    finally:
+        handle.close()
+
+
+def _resize_grayscale_linear(image, target_width, target_height):
+    source = np.asarray(image, dtype=np.float32)
+    height, width = source.shape
+    if target_width == width and target_height == height:
+        return source
+    if target_width <= 0 or target_height <= 0:
+        raise ValueError('Invalid target size %sx%s' % (target_width, target_height))
+    x_positions = np.linspace(0, max(0, width - 1), int(target_width))
+    temp = np.empty((height, int(target_width)), dtype=np.float32)
+    base_x = np.arange(width, dtype=np.float32)
+    for row in range(height):
+        temp[row, :] = np.interp(x_positions, base_x, source[row, :])
+    y_positions = np.linspace(0, max(0, height - 1), int(target_height))
+    resized = np.empty((int(target_height), int(target_width)), dtype=np.float32)
+    base_y = np.arange(height, dtype=np.float32)
+    for col in range(int(target_width)):
+        resized[:, col] = np.interp(y_positions, base_y, temp[:, col])
+    return resized
+
+
 def _ensure_text(value):
     """Return ``value`` as a unicode string."""
     if isinstance(value, text_type):
@@ -98,7 +226,7 @@ def _calculate_max_shift_pixels(stabilization, frame_width):
 
 def _determine_detection_geometry(width, height):
     if width is None or height is None or width <= 0 or height <= 0:
-        return None, None, None
+        return None, None
     max_width = 256
     target_width = min(max_width, int(width))
     if target_width <= 0:
@@ -109,32 +237,14 @@ def _determine_detection_geometry(width, height):
     target_height = int(round(float(height) * scale_ratio))
     if target_height <= 0:
         target_height = 1
-    if target_width == width and target_height == height:
-        scale_filter = None
-    else:
-        scale_filter = 'scale=%d:%d' % (target_width, target_height)
-    return target_width, target_height, scale_filter
+    return target_width, target_height
 
 
-def _load_frame_bytes(path, ffmpeg_path, width, height, scale_filter=None):
-    if width is None or height is None or width <= 0 or height <= 0:
-        raise ValueError('Invalid frame dimensions for %s' % path)
-    command = [
-        to_native_path(ffmpeg_path),
-        '-v', 'error',
-        '-i', to_native_path(path),
-    ]
-    if scale_filter:
-        command.extend(['-vf', scale_filter])
-    command.extend(['-f', 'rawvideo', '-pix_fmt', 'gray', '-'])
-    data = subprocess.check_output(command)
-    expected = int(width) * int(height)
-    if len(data) < expected:
-        raise ValueError('Incomplete raw frame from ffmpeg for %s' % path)
-    if len(data) > expected:
-        data = data[:expected]
-    array = np.frombuffer(data, dtype=np.uint8, count=expected)
-    return array.copy().reshape((int(height), int(width)))
+def _load_png_frame(path):
+    frame = _read_png_gray(path)
+    if frame.ndim != 2:
+        raise ValueError('Only 2D grayscale images are supported for stabilization: %s' % path)
+    return frame
 
 
 def _sum_abs_diff(reference, frame, width, height, dx, dy, best_score=None):
@@ -273,26 +383,32 @@ def _estimate_frame_translations(image_paths, ffmpeg_path, width, height,
                                  max_shift_px, logger=None):
     if not image_paths:
         return [], []
-    detection_width, detection_height, scale_filter = _determine_detection_geometry(width, height)
-    if detection_width is None or detection_height is None:
-        return [], []
-
     try:
-        prev_small = _load_frame_bytes(image_paths[0], ffmpeg_path,
-                                       detection_width, detection_height,
-                                       scale_filter)
-        prev_full = _load_frame_bytes(image_paths[0], ffmpeg_path,
-                                      width, height, None)
+        prev_full = _load_png_frame(image_paths[0])
     except Exception as exc:
         if logger:
             logger.warning('Unable to load frame %s for stabilization: %s',
                            image_paths[0], exc)
         return [], []
 
+    full_height, full_width = prev_full.shape
+    if width is None:
+        width = full_width
+    if height is None:
+        height = full_height
+    detection_width, detection_height = _determine_detection_geometry(width, height)
+    if detection_width is None or detection_height is None:
+        return [], []
+
+    if detection_width == full_width and detection_height == full_height:
+        prev_small = prev_full.astype(np.float32)
+    else:
+        prev_small = _resize_grayscale_linear(prev_full, detection_width, detection_height)
+
     translations = [(0, 0)]
     cumulative_dx = 0
     cumulative_dy = 0
-    cached_full_frames = [prev_full]
+    cached_full_frames = [prev_full.astype(np.uint8)]
 
     if max_shift_px is not None:
         coarse_limit = int(round(max_shift_px * float(detection_width) / float(width)))
@@ -309,16 +425,22 @@ def _estimate_frame_translations(image_paths, ffmpeg_path, width, height,
     ratio_y = float(height) / float(detection_height)
     for path in image_paths[1:]:
         try:
-            curr_small = _load_frame_bytes(path, ffmpeg_path,
-                                           detection_width, detection_height,
-                                           scale_filter)
-            curr_full = _load_frame_bytes(path, ffmpeg_path,
-                                          width, height, None)
+            curr_full = _load_png_frame(path)
         except Exception as exc:
             if logger:
                 logger.warning('Unable to load frame %s for stabilization: %s',
                                path, exc)
             return [], []
+
+        curr_height, curr_width = curr_full.shape
+        if curr_width != full_width or curr_height != full_height:
+            # Frames with inconsistent sizes cannot be stabilized together.
+            return [], []
+
+        if detection_width == curr_width and detection_height == curr_height:
+            curr_small = curr_full.astype(np.float32)
+        else:
+            curr_small = _resize_grayscale_linear(curr_full, detection_width, detection_height)
 
         dx_small, dy_small = _phase_correlation_translation(
             prev_small,
@@ -346,7 +468,7 @@ def _estimate_frame_translations(image_paths, ffmpeg_path, width, height,
 
         prev_small = curr_small
         prev_full = curr_full
-        cached_full_frames.append(curr_full)
+        cached_full_frames.append(curr_full.astype(np.uint8))
 
     return translations, cached_full_frames
 
@@ -386,7 +508,7 @@ def _render_stabilized_frames(image_paths, ffmpeg_path, translations,
         if use_cached:
             frame_array = cached_frames[index]
         else:
-            frame_array = _load_frame_bytes(path, ffmpeg_path, width, height, None)
+            frame_array = _load_png_frame(path)
         cropped = frame_array[crop_y:crop_y + crop_h, crop_x:crop_x + crop_w]
         _write_png(output_path, cropped)
         stabilized_paths.append(output_path)

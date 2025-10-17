@@ -484,17 +484,19 @@ class GwyddionBatchProcessor(object):
             gwy.gwy_app_data_browser_select_data_field(container, channel_id)
         except Exception:
             pass
-        ran = self._run_process_function(
-            container,
+        function_candidates = [
+            'statistical-quantities',
             'statistical_quantities',
-            description='statistical quantities',
-        )
-        if not ran:
-            ran = self._run_process_function(
-                container,
-                'statquant',
-                description='statistical quantities',
-            )
+            'statquant',
+        ]
+        ran = False
+        for func_name in function_candidates:
+            if self._run_process_function(
+                    container,
+                    func_name,
+                    description='statistical quantities'):
+                ran = True
+                break
         if not ran:
             return {}
 
@@ -1247,8 +1249,26 @@ class GwyddionBatchProcessor(object):
             return ''
         return text
 
+    def _invoke_data_field_get_stats(self, data_field):
+        getter = getattr(data_field, 'get_stats', None)
+        if getter is None:
+            return None
+        for args in ((), (None,), (None, None)):
+            try:
+                return getter(*args)
+            except TypeError:
+                continue
+            except Exception:
+                return None
+        return None
+
     def _collect_gwyddion_stats(self, data_field):
-        getters = ['get_statistics', 'statistics_get', 'get_stats']
+        stats_obj = self._invoke_data_field_get_stats(data_field)
+        if stats_obj:
+            decoded = self._decode_statistical_quantities_object(stats_obj)
+            if decoded:
+                return decoded
+        getters = ['get_statistics', 'statistics_get']
         for name in getters:
             getter = getattr(data_field, name, None)
             if getter is None:
@@ -1290,38 +1310,68 @@ class GwyddionBatchProcessor(object):
 
     def _collect_container_stats(self, container, channel_id):
         gwy = self.gwy
-        ran = self._run_process_function(
-            container,
+        try:
+            gwy.gwy_app_data_browser_select_data_field(container, channel_id)
+        except Exception:
+            pass
+        function_candidates = [
+            'statistical-quantities',
+            'statistical_quantities',
+            'statquant',
             'stats',
-            description='statistics export',
-        )
+            'statistics',
+        ]
+        ran = False
+        for func_name in function_candidates:
+            if self._run_process_function(container, func_name,
+                                          description='statistics export'):
+                ran = True
+                break
         if not ran:
-            self._run_process_function(
-                container,
-                'statistics',
-                description='statistics export',
-            )
+            return {}
         getter = getattr(gwy, 'gwy_container_get_object_by_name', None)
         if getter is None:
             return {}
+        stats = {}
         key_templates = [
             '/%d/stats',
             '/%d/statistics',
             '/%d/data/stats',
             '/%d/data/statistics',
+            '/module/statistical-quantities/results',
+            '/module/statistical_quantities/results',
+            '/module/statistics/results',
+            '/module/statquant/results',
         ]
         for template in key_templates:
-            key = template % int(channel_id)
+            if '%d' in template:
+                key = template % int(channel_id)
+            else:
+                key = template
             try:
                 obj = getter(container, key)
             except Exception:
                 continue
-            if not obj:
+            decoded = self._decode_statistical_quantities_object(obj)
+            if decoded:
+                stats.update(decoded)
+        if stats:
+            return stats
+        for key in self._container_keys(container):
+            text_key = self._stringify_value(key)
+            if not text_key:
                 continue
-            converted = self._normalize_stats_object(obj)
-            if converted:
-                return converted
-        return {}
+            normalized = text_key.lower()
+            if 'stat' not in normalized and 'quant' not in normalized:
+                continue
+            try:
+                obj = self._container_fetch(container, key)
+            except Exception:
+                obj = None
+            decoded = self._decode_statistical_quantities_object(obj)
+            if decoded:
+                stats.update(decoded)
+        return stats
 
     def _collect_basic_statistics(self, data_field):
         stats = {}
