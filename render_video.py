@@ -41,13 +41,7 @@ SOURCE_PATTERN = '*.ibw'
 
 # Stabilization controls -----------------------------------------------------
 STABILIZE_VIDEO = False
-STABILIZE_SHAKINESS = 5
-STABILIZE_ACCURACY = 9
-STABILIZE_STEPSIZE = 6
-STABILIZE_MINCONTRAST = 0.3
-STABILIZE_SMOOTHING = 15
-STABILIZE_TRIPOD = True
-STABILIZE_CROP_SHARED = True
+STABILIZE_MAX_DISPLACEMENT_PERCENT = 5.0
 # ---------------------------------------------------------------------------
 
 
@@ -231,34 +225,13 @@ def build_parser():
                         help='Directory containing the original IBW files (default: parent of image directory).')
     parser.add_argument('--stabilize', dest='stabilize', action='store_true',
                         default=STABILIZE_VIDEO,
-                        help='Enable drift correction and optional cropping.')
+                        help='Enable drift correction when stitching the video.')
     parser.add_argument('--no-stabilize', dest='stabilize', action='store_false',
                         help='Disable video stabilization.')
-    parser.add_argument('--stabilize-shakiness', dest='stabilize_shakiness', type=int,
-                        default=STABILIZE_SHAKINESS,
-                        help='Vidstab shakiness parameter (default: %(default)s).')
-    parser.add_argument('--stabilize-accuracy', dest='stabilize_accuracy', type=int,
-                        default=STABILIZE_ACCURACY,
-                        help='Vidstab accuracy parameter (default: %(default)s).')
-    parser.add_argument('--stabilize-stepsize', dest='stabilize_stepsize', type=int,
-                        default=STABILIZE_STEPSIZE,
-                        help='Vidstab step size (default: %(default)s).')
-    parser.add_argument('--stabilize-mincontrast', dest='stabilize_mincontrast', type=float,
-                        default=STABILIZE_MINCONTRAST,
-                        help='Vidstab minimum contrast threshold (default: %(default)s).')
-    parser.add_argument('--stabilize-smoothing', dest='stabilize_smoothing', type=int,
-                        default=STABILIZE_SMOOTHING,
-                        help='Vidstab smoothing radius (default: %(default)s).')
-    parser.add_argument('--stabilize-tripod', dest='stabilize_tripod', action='store_true',
-                        default=STABILIZE_TRIPOD,
-                        help='Use tripod mode when stabilizing (default).')
-    parser.add_argument('--no-stabilize-tripod', dest='stabilize_tripod', action='store_false',
-                        help='Disable tripod mode during stabilization.')
-    parser.add_argument('--stabilize-crop-shared', dest='stabilize_crop', action='store_true',
-                        default=STABILIZE_CROP_SHARED,
-                        help='Crop to the shared frame area after stabilization (default).')
-    parser.add_argument('--no-stabilize-crop', dest='stabilize_crop', action='store_false',
-                        help='Skip cropping after stabilization to keep edges.')
+    parser.add_argument('--stabilize-max-percent', dest='stabilize_percent', type=float,
+                        default=STABILIZE_MAX_DISPLACEMENT_PERCENT,
+                        help=('Maximum percentage of the frame width allowed for inter-frame drift '
+                              '(default: %(default)s).'))
     parser.add_argument('--no-prompt', dest='use_prompt', action='store_false', default=True,
                         help='Do not open a folder selection dialog when missing a directory.')
     parser.add_argument('--prompt', dest='use_prompt', action='store_true',
@@ -356,13 +329,7 @@ def main(argv=None):
 
     stabilization = StabilizationSettings(
         enabled=args.stabilize,
-        shakiness=args.stabilize_shakiness,
-        accuracy=args.stabilize_accuracy,
-        stepsize=args.stabilize_stepsize,
-        mincontrast=args.stabilize_mincontrast,
-        smoothing=args.stabilize_smoothing,
-        tripod=args.stabilize_tripod,
-        crop_shared_area=args.stabilize_crop,
+        max_displacement_percent=args.stabilize_percent,
     )
 
     video_settings = VideoSettings(

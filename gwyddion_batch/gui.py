@@ -23,7 +23,7 @@ except ImportError:  # pragma: no cover - Python 3 fallback
     import queue
 
 from .config import (BatchConfig, VideoSettings, StabilizationSettings,
-                     ProcessingOptions)
+                     ProcessingOptions, ALLOWED_PSDF_ZOOMS)
 from .gwyddion_loader import import_gwyddion
 from .processor import GwyddionBatchProcessor
 
@@ -99,13 +99,7 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
                 'uniform_frame_duration': bool(self.video_uniform_var.get()),
                 'stabilization': {
                     'enabled': bool(self.stabilize_var.get()),
-                    'shakiness': self.shakiness_var.get(),
-                    'accuracy': self.accuracy_var.get(),
-                    'stepsize': self.stepsize_var.get(),
-                    'mincontrast': self.mincontrast_var.get(),
-                    'smoothing': self.smoothing_var.get(),
-                    'tripod': bool(self.tripod_var.get()),
-                    'crop_shared_area': bool(self.crop_var.get()),
+                    'max_displacement_percent': self.stabilize_percent_var.get(),
                 },
             },
             'processing': {
@@ -117,6 +111,8 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
                 'fix_zero': bool(self.fix_zero_var.get()),
                 'export_stats': bool(self.stats_var.get()),
                 'generate_acf': bool(self.acf_var.get()),
+                'generate_psdf': bool(self.psdf_var.get()),
+                'psdf_zoom': self.psdf_zoom_var.get(),
             },
         }
         try:
@@ -159,13 +155,8 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
 
         stabilization_defaults = video_defaults.get('stabilization', {})
         self.stabilize_var = tk.IntVar(value=1 if stabilization_defaults.get('enabled') else 0)
-        self.shakiness_var = tk.StringVar(value=str(stabilization_defaults.get('shakiness', '5')))
-        self.accuracy_var = tk.StringVar(value=str(stabilization_defaults.get('accuracy', '9')))
-        self.stepsize_var = tk.StringVar(value=str(stabilization_defaults.get('stepsize', '6')))
-        self.mincontrast_var = tk.StringVar(value=str(stabilization_defaults.get('mincontrast', '0.3')))
-        self.smoothing_var = tk.StringVar(value=str(stabilization_defaults.get('smoothing', '15')))
-        self.tripod_var = tk.IntVar(value=1 if stabilization_defaults.get('tripod', True) else 0)
-        self.crop_var = tk.IntVar(value=1 if stabilization_defaults.get('crop_shared_area', True) else 0)
+        percent_default = stabilization_defaults.get('max_displacement_percent', '5.0')
+        self.stabilize_percent_var = tk.StringVar(value=str(percent_default))
 
         processing_defaults = defaults.get('processing', {})
         self.flatten_var = tk.IntVar(value=1 if processing_defaults.get('flatten', True) else 0)
@@ -177,6 +168,9 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
         self.fix_zero_var = tk.IntVar(value=1 if processing_defaults.get('fix_zero', True) else 0)
         self.stats_var = tk.IntVar(value=1 if processing_defaults.get('export_stats') else 0)
         self.acf_var = tk.IntVar(value=1 if processing_defaults.get('generate_acf') else 0)
+        self.psdf_var = tk.IntVar(value=1 if processing_defaults.get('generate_psdf') else 0)
+        psdf_zoom_default = processing_defaults.get('psdf_zoom', '4')
+        self.psdf_zoom_var = tk.StringVar(value=self._sanitize_psdf_zoom(psdf_zoom_default))
 
     def _build_ui(self):
         main = tk.Frame(self.root)
@@ -199,7 +193,6 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
 
         self._video_entries = []
         self._stabilization_entries = []
-        self._stabilization_checkbuttons = []
         self._video_checkbuttons = []
         self._align_method_buttons = []
         self._align_degree_entry = None
@@ -262,6 +255,21 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
         acf_cb = tk.Checkbutton(processing_frame, text='Generate ACF image', variable=self.acf_var)
         acf_cb.grid(row=6, column=0, columnspan=3, sticky='w')
 
+        psdf_frame = tk.Frame(processing_frame)
+        psdf_frame.grid(row=7, column=0, columnspan=3, sticky='w')
+        psdf_cb = tk.Checkbutton(
+            psdf_frame,
+            text='Generate 2D PSDF image',
+            variable=self.psdf_var,
+        )
+        psdf_cb.pack(side='left')
+        psdf_zoom_label = tk.Label(psdf_frame, text='Zoom:')
+        psdf_zoom_label.pack(side='left', padx=(10, 2))
+        psdf_zoom_choices = [str(value) for value in ALLOWED_PSDF_ZOOMS]
+        self.psdf_zoom_menu = tk.OptionMenu(psdf_frame, self.psdf_zoom_var, *psdf_zoom_choices)
+        self.psdf_zoom_menu.configure(width=4)
+        self.psdf_zoom_menu.pack(side='left')
+
         row += 1
 
         video_frame = tk.LabelFrame(main, text='Video rendering')
@@ -308,22 +316,13 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
         )
         self._stabilize_checkbox.grid(row=0, column=0, columnspan=3, sticky='w')
 
-        self._add_labeled_entry(stab_frame, 'Shakiness:', self.shakiness_var, 1,
-                                entry_list=self._stabilization_entries)
-        self._add_labeled_entry(stab_frame, 'Accuracy:', self.accuracy_var, 2,
-                                entry_list=self._stabilization_entries)
-        self._add_labeled_entry(stab_frame, 'Step size:', self.stepsize_var, 3,
-                                entry_list=self._stabilization_entries)
-        self._add_labeled_entry(stab_frame, 'Min contrast:', self.mincontrast_var, 4,
-                                entry_list=self._stabilization_entries)
-        self._add_labeled_entry(stab_frame, 'Smoothing:', self.smoothing_var, 5,
-                                entry_list=self._stabilization_entries)
-
-        tripod_cb = tk.Checkbutton(stab_frame, text='Tripod mode', variable=self.tripod_var)
-        tripod_cb.grid(row=6, column=0, columnspan=3, sticky='w')
-        crop_cb = tk.Checkbutton(stab_frame, text='Crop to shared area', variable=self.crop_var)
-        crop_cb.grid(row=7, column=0, columnspan=3, sticky='w')
-        self._stabilization_checkbuttons.extend([tripod_cb, crop_cb])
+        self._add_labeled_entry(
+            stab_frame,
+            'Max drift (% width):',
+            self.stabilize_percent_var,
+            1,
+            entry_list=self._stabilization_entries,
+        )
 
         row += 1
         button_frame = tk.Frame(main)
@@ -409,8 +408,6 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
         state = tk.NORMAL if (video_enabled and self.stabilize_var.get()) else tk.DISABLED
         for entry in self._stabilization_entries:
             entry.configure(state=state)
-        for checkbox in self._stabilization_checkbuttons:
-            checkbox.configure(state=state)
         if not video_enabled:
             self.stabilize_var.set(0)
 
@@ -430,6 +427,9 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
     def start_processing(self):
         if self.processing_thread and self.processing_thread.is_alive():
             return
+        folder_for_run = self.folder_var.get().strip()
+        if folder_for_run:
+            self.output_dir_var.set(self._default_output_for(folder_for_run))
         try:
             config = self._build_config()
         except ValueError as exc:
@@ -482,15 +482,12 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
         uniform_frame_duration = bool(self.video_uniform_var.get()) if video_enabled else False
 
         stabilization_enabled = video_enabled and bool(self.stabilize_var.get())
+        percent_value = self._parse_float(self.stabilize_percent_var.get())
+        if percent_value is None or percent_value < 0:
+            percent_value = 0.0
         stabilization = StabilizationSettings(
             enabled=stabilization_enabled,
-            shakiness=int(self.shakiness_var.get() or 5),
-            accuracy=int(self.accuracy_var.get() or 9),
-            stepsize=int(self.stepsize_var.get() or 6),
-            mincontrast=float(self.mincontrast_var.get() or 0.3),
-            smoothing=int(self.smoothing_var.get() or 15),
-            tripod=bool(self.tripod_var.get()),
-            crop_shared_area=bool(self.crop_var.get()),
+            max_displacement_percent=percent_value,
         )
 
         ffmpeg_path = DEFAULT_FFMPEG_PATH
@@ -510,6 +507,7 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
             align_degree = int(self.align_degree_var.get())
         except Exception:
             align_degree = 2
+        psdf_zoom = int(self._sanitize_psdf_zoom(self.psdf_zoom_var.get()))
         processing_options = ProcessingOptions(
             flatten=bool(self.flatten_var.get()),
             align_rows=bool(self.align_rows_var.get()),
@@ -519,14 +517,19 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
             fix_zero=bool(self.fix_zero_var.get()),
             export_stats=bool(self.stats_var.get()),
             generate_acf=bool(self.acf_var.get()),
+            generate_psdf=bool(self.psdf_var.get()),
+            psdf_zoom=psdf_zoom,
         )
+
+        sanitized_output = self._sanitize_output_directory(folder, output_directory)
+        self.output_dir_var.set(sanitized_output)
 
         config = BatchConfig(
             folder_path=folder,
             channel_numbers=channels,
             pixel_count=pixel_count,
             file_filter=file_filter,
-            output_directory=output_directory,
+            output_directory=sanitized_output,
             video_settings=video_settings,
             run_timestamp=datetime.datetime.now(),
             processing_options=processing_options,
@@ -541,6 +544,36 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
         if not value:
             return None
         return float(value)
+
+    def _sanitize_psdf_zoom(self, value):
+        try:
+            numeric = int(round(float(value)))
+        except Exception:
+            numeric = 4
+        if numeric not in ALLOWED_PSDF_ZOOMS:
+            numeric = 4
+        return str(numeric)
+
+    def _sanitize_output_directory(self, folder, path):
+        folder = (folder or '').strip()
+        default_output = self._default_output_for(folder)
+        if not folder:
+            return default_output
+        if not path:
+            return default_output
+        normalized_folder = os.path.abspath(folder)
+        normalized_output = os.path.abspath(path)
+        try:
+            relative = os.path.relpath(normalized_output, normalized_folder)
+        except ValueError:
+            return default_output
+        if relative in (os.curdir, '.'):
+            return normalized_output
+        if relative == os.pardir:
+            return default_output
+        if relative.startswith(os.pardir + os.sep):
+            return default_output
+        return normalized_output
 
     def _run_processing(self, config):
         handler = _QueueHandler(self.log_queue)

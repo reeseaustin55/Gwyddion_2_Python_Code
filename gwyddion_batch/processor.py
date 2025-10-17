@@ -4,9 +4,10 @@ from __future__ import absolute_import
 
 import logging
 import os
+from collections import defaultdict
 from contextlib import contextmanager
 
-from .compat import to_native_path
+from .compat import binary_type, text_type, to_native_path
 from .config import format_time_multiplier, ProcessingOptions
 from .video import stitch_images_to_video
 
@@ -106,6 +107,7 @@ class GwyddionBatchProcessor(object):
             successes = 0
             output_paths = []
             acf_paths = []
+            psdf_paths = []
             capture_times = []
             channel_output_directory = config.ensure_channel_directory(channel_number)
             if processing_options and getattr(processing_options, 'generate_acf', False):
@@ -133,6 +135,9 @@ class GwyddionBatchProcessor(object):
                     acf_path = result.get('acf_path')
                     if acf_path:
                         acf_paths.append(acf_path)
+                    psdf_path = result.get('psdf_path')
+                    if psdf_path:
+                        psdf_paths.append(psdf_path)
                     capture_times.append(file_times.get(path))
 
             self.logger.info('Channel %d complete: %d/%d files succeeded',
@@ -142,6 +147,7 @@ class GwyddionBatchProcessor(object):
                 'total': len(files),
                 'output_paths': output_paths,
                 'acf_paths': acf_paths,
+                'psdf_paths': psdf_paths,
             }
             overall_processed += successes
 
@@ -255,10 +261,21 @@ class GwyddionBatchProcessor(object):
                 scaled_channel,
                 acf_directory,
             )
+        psdf_path = None
+        if getattr(options, 'generate_psdf', False):
+            psdf_path = self._generate_psdf_image(
+                container,
+                settings,
+                output_path,
+                scaled_channel,
+                options,
+                pixel_count,
+            )
         return {
             'image_path': output_path,
             'acf_path': acf_path,
             'stats_path': stats_path,
+            'psdf_path': psdf_path,
         }
 
     def _run_process_function(self, container, func_name, description=None,
@@ -314,18 +331,21 @@ class GwyddionBatchProcessor(object):
                 'level',
                 description='flattening',
             )
-        if options.align_rows:
+        if options.align_rows or options.remove_scars:
+            if options.align_rows:
+                self.logger.debug('Aligning rows before scaling')
+            else:
+                self.logger.debug('Aligning rows before scaling (required for scar removal)')
             self._run_align_rows(container, settings, options)
         if options.remove_scars:
-            self.logger.debug('Removing scars')
+            self.logger.debug('Removing scars before scaling')
             self._run_process_function(
                 container,
                 'remove_scars',
                 description='scar removal',
             )
-            if options.align_rows:
-                self.logger.debug('Re-aligning rows after scar removal')
-                self._run_align_rows(container, settings, options)
+            self.logger.debug('Re-aligning rows after scar removal (pre-scaling)')
+            self._run_align_rows(container, settings, options)
 
     def _apply_scaling(self, container, settings, pixel_count, xres, yres):
         gwy = self.gwy
@@ -351,8 +371,20 @@ class GwyddionBatchProcessor(object):
                 'level',
                 description='flattening',
             )
-        if options.align_rows:
-            self.logger.debug('Aligning rows on scaled data')
+        if options.align_rows or options.remove_scars:
+            if options.align_rows:
+                self.logger.debug('Aligning rows on scaled data')
+            else:
+                self.logger.debug('Aligning rows on scaled data (required for scar removal)')
+            self._run_align_rows(container, settings, options)
+        if options.remove_scars:
+            self.logger.debug('Removing scars after scaling')
+            self._run_process_function(
+                container,
+                'remove_scars',
+                description='scar removal',
+            )
+            self.logger.debug('Re-aligning rows after scar removal (post-scaling)')
             self._run_align_rows(container, settings, options)
         if options.fix_zero:
             data_field = gwy.gwy_app_data_browser_get_current(gwy.APP_DATA_FIELD)
@@ -435,6 +467,9 @@ class GwyddionBatchProcessor(object):
     def _collect_statistics(self, container, data_field, channel_id):
         if data_field is None:
             return {}
+        stats = self._collect_statistical_quantities(container, channel_id, data_field)
+        if stats:
+            return stats
         stats = self._collect_gwyddion_stats(data_field)
         if stats:
             return stats
@@ -443,8 +478,797 @@ class GwyddionBatchProcessor(object):
             return stats
         return self._collect_basic_statistics(data_field)
 
+    def _collect_statistical_quantities(self, container, channel_id, data_field):
+        gwy = self.gwy
+        try:
+            gwy.gwy_app_data_browser_select_data_field(container, channel_id)
+        except Exception:
+            pass
+        function_candidates = [
+            'statistical-quantities',
+            'statistical_quantities',
+            'statquant',
+        ]
+        ran = False
+        for func_name in function_candidates:
+            if self._run_process_function(
+                    container,
+                    func_name,
+                    description='statistical quantities'):
+                ran = True
+                break
+        if not ran:
+            return {}
+
+        stats = self._extract_statistical_quantities_from_container(container, channel_id)
+        if stats:
+            return stats
+
+        table_stats = self._extract_statistical_quantities_from_table()
+        if table_stats:
+            return table_stats
+
+        return {}
+
+    def _stat_container_to_mapping(self, container, prefix=None, seen=None):
+        if container is None:
+            return {}
+        if isinstance(container, (list, tuple, dict)):
+            return {}
+        if seen is None:
+            seen = set()
+        container_id = id(container)
+        if container_id in seen:
+            return {}
+        seen.add(container_id)
+        keys = self._container_keys(container)
+        if not keys:
+            return {}
+        flat_values = {}
+        grouped = defaultdict(dict)
+        for key in keys:
+            text_key = self._stringify_value(key)
+            if not text_key:
+                continue
+            try:
+                value = self._container_fetch(container, key)
+            except Exception:
+                continue
+            if value is None:
+                continue
+            normalized_key = text_key.strip('/')
+            if not normalized_key:
+                continue
+            segments = [self._stringify_value(part) for part in normalized_key.split('/') if part]
+            if not segments:
+                segments = [normalized_key]
+            leaf = segments[-1].lower()
+            base_path = '/'.join(segments[:-1])
+            if leaf in (
+                'value', 'values', 'val',
+                'unit', 'units', 'label', 'name', 'text',
+                'si_value', 'si-value', 'sivalue',
+                'siunit', 'si_unit', 'si-unit', 'siunits', 'si-units',
+            ):
+                grouped[base_path][leaf] = value
+                continue
+            if self._is_container_like(value):
+                nested_prefix = '/'.join(segments)
+                nested = self._stat_container_to_mapping(value, prefix=nested_prefix, seen=seen)
+                for nested_label, nested_value in nested.items():
+                    flat_values[nested_label] = nested_value
+                continue
+            if isinstance(value, (list, tuple)):
+                nested = self._decode_statquant_sequence(value)
+                if nested:
+                    nested_prefix = '/'.join(segments)
+                    for nested_label, nested_value in nested.items():
+                        combined_label = self._combine_stat_labels(nested_prefix, nested_label)
+                        flat_values[combined_label] = nested_value
+                    continue
+            combined_label = self._combine_stat_labels('/'.join(segments), None)
+            if combined_label:
+                value_text, unit_text = self._extract_value_and_unit(value)
+                if value_text:
+                    if unit_text:
+                        flat_values[combined_label] = '%s %s' % (value_text, unit_text)
+                    else:
+                        flat_values[combined_label] = value_text
+        for path, details in grouped.items():
+            label_candidate = details.get('label') or details.get('name') or details.get('text')
+            combined_label = self._combine_stat_labels(path, label_candidate)
+            value_obj = details.get('value')
+            if value_obj is None:
+                value_obj = details.get('values')
+            if value_obj is None:
+                value_obj = details.get('si_value') or details.get('si-value') or details.get('sivalue')
+            unit_obj = details.get('unit')
+            if unit_obj is None:
+                unit_obj = details.get('units')
+            if unit_obj is None:
+                unit_obj = (
+                    details.get('siunit') or details.get('si_unit') or
+                    details.get('si-unit') or details.get('siunits') or
+                    details.get('si-units')
+                )
+            value_text, fallback_unit = self._extract_value_and_unit(value_obj, unit_obj)
+            unit_text = self._format_stat_unit(unit_obj)
+            if not unit_text:
+                unit_text = fallback_unit
+            if value_text:
+                if unit_text:
+                    flat_values[combined_label] = '%s %s' % (value_text, unit_text)
+                else:
+                    flat_values[combined_label] = value_text
+        if prefix:
+            prefixed = {}
+            for key, value in flat_values.items():
+                prefixed[self._combine_stat_labels(prefix, key)] = value
+            return prefixed
+        return flat_values
+
+    def _normalize_stat_segment(self, segment):
+        text = self._stringify_value(segment)
+        if not text:
+            return ''
+        text = text.strip()
+        if not text:
+            return ''
+        if text.isdigit():
+            return ''
+        canonical = text.replace('_', ' ')
+        canonical_lower = canonical.lower().replace('-', ' ')
+        ignored = {
+            'module', 'data', 'statistics', 'statistical quantities',
+            'statistical-quantities', 'statquant', 'results', 'channels',
+            'channel', 'values', 'value', 'units', 'unit', 'text', 'labels',
+            'names', 'quantities',
+        }
+        if canonical_lower in ignored:
+            return ''
+        canonical = canonical.strip()
+        if not canonical:
+            return ''
+        if canonical == canonical.lower():
+            canonical = canonical.title()
+        return canonical
+
+    def _combine_stat_labels(self, prefix, label):
+        prefix_text = self._stringify_value(prefix) if prefix is not None else ''
+        label_text = self._stringify_value(label) if label is not None else ''
+        prefix_parts = []
+        for part in prefix_text.split('/'):
+            normalized = self._normalize_stat_segment(part)
+            if normalized:
+                prefix_parts.append(normalized)
+        normalized_label = self._normalize_stat_segment(label_text) if label_text else ''
+        if normalized_label:
+            leaf = normalized_label
+        elif prefix_parts:
+            leaf = prefix_parts[-1]
+            prefix_parts = prefix_parts[:-1]
+        else:
+            leaf = ''
+        if prefix_parts:
+            prefix_display = ' / '.join(prefix_parts)
+            if leaf:
+                return '%s: %s' % (prefix_display, leaf)
+            return prefix_display
+        return leaf
+
+    def _is_container_like(self, value):
+        if value is None:
+            return False
+        if isinstance(value, (list, tuple, dict)):
+            return False
+        for name in ('get_value_by_name', 'get_object_by_name', 'keys_by_name'):
+            if getattr(value, name, None) is not None:
+                return True
+        return False
+
+    def _container_keys(self, container):
+        key_sources = [
+            ('keys_by_name', ('',)),
+            ('keys', ()),
+            ('list_keys', ()),
+        ]
+        for method_name, args in key_sources:
+            method = getattr(container, method_name, None)
+            if method is None:
+                continue
+            try:
+                result = method(*args)
+            except TypeError:
+                try:
+                    result = method()
+                except Exception:
+                    continue
+            except Exception:
+                continue
+            if isinstance(result, (list, tuple, set)):
+                keys = list(result)
+            else:
+                try:
+                    keys = list(result)
+                except Exception:
+                    continue
+            if keys:
+                return keys
+        iterator = getattr(container, '__iter__', None)
+        if iterator is not None:
+            try:
+                keys = list(iterator())
+                if keys:
+                    return keys
+            except TypeError:
+                try:
+                    keys = list(container)
+                    if keys:
+                        return keys
+                except Exception:
+                    pass
+            except Exception:
+                pass
+        foreach = getattr(self.gwy, 'gwy_container_foreach', None)
+        if callable(foreach):
+            collected = []
+
+            def _collector(container_obj, name, value_obj=None, user_data=None):
+                try:
+                    text = self._stringify_value(name)
+                except Exception:
+                    text = name
+                if text:
+                    collected.append(text)
+
+            try:
+                foreach(container, _collector, None)
+            except TypeError:
+                try:
+                    foreach(container, _collector)
+                except Exception:
+                    collected = []
+            except Exception:
+                collected = []
+            if collected:
+                return collected
+        return []
+
+    def _container_fetch(self, container, key):
+        getter_names = [
+            'get_value_by_name',
+            'get_object_by_name',
+            'get_by_name',
+            'get',
+        ]
+        for name in getter_names:
+            getter = getattr(container, name, None)
+            if getter is None:
+                continue
+            try:
+                return getter(key)
+            except Exception:
+                continue
+        try:
+            return container[key]
+        except Exception:
+            pass
+        gwy = getattr(self, 'gwy', None)
+        if gwy is not None:
+            for func_name in ('gwy_container_get_object_by_name', 'gwy_container_get_value_by_name'):
+                func = getattr(gwy, func_name, None)
+                if func is None:
+                    continue
+                try:
+                    return func(container, key)
+                except Exception:
+                    continue
+        return None
+
+    def _extract_statistical_quantities_from_container(self, container, channel_id):
+        gwy = self.gwy
+        getter = getattr(gwy, 'gwy_container_get_object_by_name', None)
+        if getter is None:
+            return {}
+
+        candidate_keys = [
+            '/%d/statistics/statistical_quantities',
+            '/%d/statistics/statquant',
+            '/%d/data/statistical_quantities',
+            '/%d/data/statquant',
+            '/%d/statistics/quantities',
+            '/module/statistics/statistical_quantities',
+            '/module/statistics/statquant',
+            '/module/statistical_quantities/results',
+            '/module/statistical_quantities',
+            '/module/statistical-quantities/results',
+            '/module/statistical-quantities',
+        ]
+
+        for template in candidate_keys:
+            if '%d' in template:
+                key = template % int(channel_id)
+            else:
+                key = template
+            try:
+                obj = getter(container, key)
+            except Exception:
+                obj = None
+            stats = self._decode_statistical_quantities_object(obj)
+            if stats:
+                return stats
+        return {}
+
+    def _extract_statistical_quantities_from_table(self):
+        gwy = self.gwy
+        app_table_enum = getattr(gwy, 'APP_TABLE', None)
+        browser_getter = getattr(gwy, 'gwy_app_data_browser_get_current', None)
+        if browser_getter is None or app_table_enum is None:
+            return {}
+        table = None
+        try:
+            table = browser_getter(app_table_enum)
+        except TypeError:
+            try:
+                table = browser_getter()
+            except Exception:
+                table = None
+        except Exception:
+            table = None
+        if table is None:
+            return {}
+
+        length_getters = [
+            'get_n_rows',
+            'get_rows',
+            'get_length',
+            'get_size',
+        ]
+
+        count = None
+        for name in length_getters:
+            getter = getattr(table, name, None)
+            if getter is None:
+                continue
+            try:
+                count = int(getter())
+                break
+            except Exception:
+                continue
+        if count is None or count <= 0:
+            try:
+                count = len(table)
+            except Exception:
+                count = 0
+        if count <= 0:
+            return {}
+
+        stats = {}
+        for row in range(count):
+            name_value = self._table_get_cell(table, row, 0)
+            value_value = self._table_get_cell(table, row, 1)
+            unit_value = self._table_get_cell(table, row, 2)
+            label = self._stringify_value(name_value)
+            if not label:
+                continue
+            value_text, fallback_unit = self._extract_value_and_unit(value_value, unit_value)
+            unit_text = self._format_stat_unit(unit_value)
+            if not unit_text:
+                unit_text = fallback_unit
+            if not value_text and not unit_text:
+                continue
+            if unit_text:
+                stats[label] = '%s %s' % (value_text, unit_text)
+            else:
+                stats[label] = value_text
+        return stats
+
+    def _table_get_cell(self, table, row, column):
+        cell_getters = [
+            'get_value',
+            'get_cell',
+            'value',
+            'get',
+        ]
+        for name in cell_getters:
+            getter = getattr(table, name, None)
+            if getter is None:
+                continue
+            try:
+                return getter(row, column)
+            except TypeError:
+                try:
+                    return getter(row)
+                except TypeError:
+                    try:
+                        return getter(row, column, 0)
+                    except Exception:
+                        continue
+                except Exception:
+                    continue
+            except Exception:
+                continue
+        row_getters = ['get_row', 'row', 'get_row_values', 'get_values']
+        for name in row_getters:
+            getter = getattr(table, name, None)
+            if getter is None:
+                continue
+            try:
+                result = getter(row)
+            except Exception:
+                continue
+            sequence = self._sequence_from_object(result)
+            if sequence and column < len(sequence):
+                return sequence[column]
+        return None
+
+    def _decode_statistical_quantities_object(self, obj):
+        if not obj:
+            return {}
+        container_mapping = self._stat_container_to_mapping(obj)
+        if container_mapping:
+            return container_mapping
+        mapping = {}
+        if isinstance(obj, (list, tuple)):
+            mapping = self._decode_statquant_sequence(obj)
+        if mapping:
+            return mapping
+        normalized = self._normalize_stats_object(obj)
+        if normalized:
+            enriched = {}
+            for key, value in normalized.items():
+                label = self._stringify_value(key)
+                if not label:
+                    continue
+                text_value, unit_text = self._extract_value_and_unit(value)
+                if not text_value and not unit_text:
+                    continue
+                if unit_text:
+                    enriched[label] = '%s %s' % (text_value, unit_text)
+                else:
+                    enriched[label] = text_value
+            if enriched:
+                return enriched
+
+        names = self._extract_sequence(obj, 'names')
+        values = self._extract_sequence(obj, 'values')
+        units = self._extract_sequence(obj, 'units')
+        if not names or not values:
+            names = self._extract_sequence(obj, 'labels')
+        if not names or not values:
+            return {}
+        stats = {}
+        count = min(len(names), len(values))
+        for index in range(count):
+            label = self._stringify_value(names[index])
+            if not label:
+                continue
+            explicit_unit = units[index] if units and index < len(units) else None
+            value_text, unit_text = self._extract_value_and_unit(values[index], explicit_unit)
+            if unit_text:
+                stats[label] = '%s %s' % (value_text, unit_text)
+            else:
+                stats[label] = value_text
+        return stats
+
+    def _decode_statquant_sequence(self, sequence):
+        stats = {}
+        for entry in sequence:
+            if isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                label = self._stringify_value(entry[0])
+                explicit_unit = entry[2] if len(entry) >= 3 else None
+                value_text, unit_text = self._extract_value_and_unit(entry[1], explicit_unit)
+                if label:
+                    if unit_text:
+                        stats[label] = '%s %s' % (value_text, unit_text)
+                    else:
+                        stats[label] = value_text
+        return stats
+
+    def _extract_sequence(self, container_like, key):
+        if not container_like:
+            return []
+        getter_names = [
+            'get',
+            'get_value_by_name',
+            'get_by_name',
+        ]
+        for name in getter_names:
+            getter = getattr(container_like, name, None)
+            if getter is None:
+                continue
+            try:
+                value = getter(key)
+            except Exception:
+                continue
+            sequence = self._sequence_from_object(value)
+            if sequence is not None:
+                return sequence
+        gwy_getter = getattr(self.gwy, 'gwy_container_get_object_by_name', None)
+        if gwy_getter is not None:
+            try:
+                value = gwy_getter(container_like, key)
+            except Exception:
+                value = None
+            sequence = self._sequence_from_object(value)
+            if sequence is not None:
+                return sequence
+        return []
+
+    def _sequence_from_object(self, value):
+        if value is None:
+            return []
+        if isinstance(value, (list, tuple)):
+            return list(value)
+        if isinstance(value, text_type):
+            return [value]
+        if isinstance(value, binary_type):
+            try:
+                return [value.decode('utf-8')]
+            except Exception:
+                return [value]
+        to_list = getattr(value, 'to_list', None)
+        if callable(to_list):
+            try:
+                data = to_list()
+                if isinstance(data, (list, tuple)):
+                    return list(data)
+            except Exception:
+                pass
+        get_data = getattr(value, 'get_data', None)
+        if callable(get_data):
+            try:
+                data = get_data()
+                if isinstance(data, (list, tuple)):
+                    return list(data)
+            except Exception:
+                pass
+        get_array = getattr(value, 'get_array', None)
+        if callable(get_array):
+            try:
+                data = get_array()
+                if isinstance(data, (list, tuple)):
+                    return list(data)
+            except Exception:
+                pass
+        length_getters = ['__len__', 'get_length', 'get_n', 'get_size']
+        fetch_getters = ['__getitem__', 'get', 'value', 'get_value']
+        for len_name in length_getters:
+            length_fn = getattr(value, len_name, None)
+            if length_fn is None:
+                continue
+            try:
+                length = length_fn()
+            except TypeError:
+                try:
+                    length = length_fn(0)
+                except Exception:
+                    continue
+            except Exception:
+                continue
+            try:
+                length = int(length)
+            except Exception:
+                continue
+            if length <= 0 or length > 4096:
+                continue
+            for fetch_name in fetch_getters:
+                fetch = getattr(value, fetch_name, None)
+                if fetch is None:
+                    continue
+                sequence = []
+                success = True
+                for index in range(length):
+                    try:
+                        item = fetch(index)
+                    except Exception:
+                        success = False
+                        break
+                    sequence.append(item)
+                if success:
+                    return sequence
+        iterator = getattr(value, '__iter__', None)
+        if iterator is not None:
+            try:
+                return list(iterator())
+            except TypeError:
+                try:
+                    return list(value)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+        return []
+
+    def _stringify_value(self, value):
+        if value is None:
+            return ''
+        if isinstance(value, text_type):
+            return value.strip()
+        if isinstance(value, binary_type):
+            try:
+                return value.decode('utf-8').strip()
+            except Exception:
+                try:
+                    return value.decode('latin-1').strip()
+                except Exception:
+                    return repr(value)
+        try:
+            return str(value).strip()
+        except Exception:
+            return ''
+
+    def _format_number(self, value):
+        if value is None:
+            return ''
+        try:
+            numeric = float(value)
+        except Exception:
+            return ''
+        return ('%.6g' % numeric).strip()
+
+    def _unit_to_text(self, unit_obj):
+        if unit_obj is None:
+            return ''
+        if isinstance(unit_obj, (text_type, binary_type)):
+            return self._stringify_value(unit_obj)
+        if isinstance(unit_obj, (int, float)):
+            return ''
+        for name in (
+            'get_si_string', 'get_string', 'get_unit_string',
+            'get_symbol', 'get_si_unit_string',
+        ):
+            getter = getattr(unit_obj, name, None)
+            if getter is None:
+                continue
+            try:
+                text = getter()
+            except Exception:
+                continue
+            formatted = self._stringify_value(text)
+            if formatted:
+                return formatted
+        for attr in ('si_string', 'unit_string', 'string', 'symbol'):
+            value = getattr(unit_obj, attr, None)
+            if value:
+                formatted = self._stringify_value(value)
+                if formatted:
+                    return formatted
+        try:
+            return self._stringify_value(unit_obj)
+        except Exception:
+            return ''
+
+    def _decode_si_value_object(self, value_obj):
+        if value_obj is None:
+            return None, ''
+        for getter_name in (
+            'get_value', 'get_numeric_value', 'get_val', 'get_d',
+            'value', 'numeric_value', 'numeric',
+        ):
+            getter = getattr(value_obj, getter_name, None)
+            numeric = None
+            if callable(getter):
+                try:
+                    numeric = getter()
+                except TypeError:
+                    try:
+                        numeric = getter(None)
+                    except Exception:
+                        continue
+                except Exception:
+                    continue
+            elif getter is not None:
+                numeric = getter
+            if numeric is None:
+                continue
+            text = self._format_number(numeric)
+            unit_text = ''
+            for unit_getter_name in (
+                'get_si_unit', 'get_unit', 'si_unit', 'unit',
+            ):
+                unit_getter = getattr(value_obj, unit_getter_name, None)
+                if unit_getter is None:
+                    continue
+                try:
+                    unit_candidate = unit_getter()
+                except TypeError:
+                    try:
+                        unit_candidate = unit_getter(None)
+                    except Exception:
+                        continue
+                except Exception:
+                    continue
+                unit_text = self._unit_to_text(unit_candidate)
+                if unit_text:
+                    break
+            if not unit_text:
+                for attr in ('unit_string', 'si_unit_string'):
+                    unit_candidate = getattr(value_obj, attr, None)
+                    if not unit_candidate:
+                        continue
+                    unit_text = self._unit_to_text(unit_candidate)
+                    if unit_text:
+                        break
+            return text, unit_text
+        return None, ''
+
+    def _extract_value_and_unit(self, value_obj, unit_obj=None):
+        if value_obj is None and unit_obj is None:
+            return '', ''
+        value_text = ''
+        unit_text = ''
+        decoded_value, decoded_unit = self._decode_si_value_object(value_obj)
+        if decoded_value:
+            value_text = decoded_value
+        if decoded_unit:
+            unit_text = decoded_unit
+        if not value_text:
+            if isinstance(value_obj, (int, float)):
+                value_text = self._format_number(value_obj)
+            else:
+                for attr in ('value', 'val', 'numeric', 'number'):
+                    attr_value = getattr(value_obj, attr, None)
+                    if attr_value is None or callable(attr_value):
+                        continue
+                    candidate = self._format_number(attr_value)
+                    if candidate:
+                        value_text = candidate
+                        break
+                if not value_text:
+                    for method_name in ('get', 'get_value_by_name'):
+                        getter = getattr(value_obj, method_name, None)
+                        if getter is None:
+                            continue
+                        try:
+                            raw = getter('value')
+                        except Exception:
+                            continue
+                        candidate = self._format_number(raw)
+                        if candidate:
+                            value_text = candidate
+                            break
+                if not value_text:
+                    text_value = self._stringify_value(value_obj)
+                    if text_value:
+                        value_text = text_value
+        if unit_obj is not None and not unit_text:
+            unit_text = self._unit_to_text(unit_obj)
+        return value_text, unit_text
+
+    def _format_stat_value(self, value):
+        value_text, _ = self._extract_value_and_unit(value)
+        return value_text
+
+    def _format_stat_unit(self, value):
+        text = self._unit_to_text(value)
+        if not text:
+            return ''
+        normalized = text.lower()
+        if normalized in ('-', 'none', 'unitless', 'dimensionless'):
+            return ''
+        return text
+
+    def _invoke_data_field_get_stats(self, data_field):
+        getter = getattr(data_field, 'get_stats', None)
+        if getter is None:
+            return None
+        for args in ((), (None,), (None, None)):
+            try:
+                return getter(*args)
+            except TypeError:
+                continue
+            except Exception:
+                return None
+        return None
+
     def _collect_gwyddion_stats(self, data_field):
-        getters = ['get_statistics', 'statistics_get', 'get_stats']
+        stats_obj = self._invoke_data_field_get_stats(data_field)
+        if stats_obj:
+            decoded = self._decode_statistical_quantities_object(stats_obj)
+            if decoded:
+                return decoded
+        getters = ['get_statistics', 'statistics_get']
         for name in getters:
             getter = getattr(data_field, name, None)
             if getter is None:
@@ -486,38 +1310,68 @@ class GwyddionBatchProcessor(object):
 
     def _collect_container_stats(self, container, channel_id):
         gwy = self.gwy
-        ran = self._run_process_function(
-            container,
+        try:
+            gwy.gwy_app_data_browser_select_data_field(container, channel_id)
+        except Exception:
+            pass
+        function_candidates = [
+            'statistical-quantities',
+            'statistical_quantities',
+            'statquant',
             'stats',
-            description='statistics export',
-        )
+            'statistics',
+        ]
+        ran = False
+        for func_name in function_candidates:
+            if self._run_process_function(container, func_name,
+                                          description='statistics export'):
+                ran = True
+                break
         if not ran:
-            self._run_process_function(
-                container,
-                'statistics',
-                description='statistics export',
-            )
+            return {}
         getter = getattr(gwy, 'gwy_container_get_object_by_name', None)
         if getter is None:
             return {}
+        stats = {}
         key_templates = [
             '/%d/stats',
             '/%d/statistics',
             '/%d/data/stats',
             '/%d/data/statistics',
+            '/module/statistical-quantities/results',
+            '/module/statistical_quantities/results',
+            '/module/statistics/results',
+            '/module/statquant/results',
         ]
         for template in key_templates:
-            key = template % int(channel_id)
+            if '%d' in template:
+                key = template % int(channel_id)
+            else:
+                key = template
             try:
                 obj = getter(container, key)
             except Exception:
                 continue
-            if not obj:
+            decoded = self._decode_statistical_quantities_object(obj)
+            if decoded:
+                stats.update(decoded)
+        if stats:
+            return stats
+        for key in self._container_keys(container):
+            text_key = self._stringify_value(key)
+            if not text_key:
                 continue
-            converted = self._normalize_stats_object(obj)
-            if converted:
-                return converted
-        return {}
+            normalized = text_key.lower()
+            if 'stat' not in normalized and 'quant' not in normalized:
+                continue
+            try:
+                obj = self._container_fetch(container, key)
+            except Exception:
+                obj = None
+            decoded = self._decode_statistical_quantities_object(obj)
+            if decoded:
+                stats.update(decoded)
+        return stats
 
     def _collect_basic_statistics(self, data_field):
         stats = {}
@@ -554,6 +1408,9 @@ class GwyddionBatchProcessor(object):
     def _normalize_stats_object(self, stats_obj):
         if not stats_obj:
             return {}
+        container_mapping = self._stat_container_to_mapping(stats_obj)
+        if container_mapping:
+            return container_mapping
         if isinstance(stats_obj, dict):
             return self._stringify_stats(stats_obj)
         to_dict = getattr(stats_obj, 'to_dict', None)
@@ -654,6 +1511,162 @@ class GwyddionBatchProcessor(object):
             self.logger.error('Failed to generate ACF for %s: %s', output_path, exc)
             self.logger.debug('ACF generation error details', exc_info=True)
             return None
+
+    def _generate_psdf_image(self, container, settings, output_path,
+                             scaled_channel_id, options, pixel_count):
+        zoom_value = getattr(options, 'psdf_zoom', 4.0)
+        try:
+            zoom = float(zoom_value)
+        except Exception:
+            zoom = 4.0
+        if zoom <= 0:
+            zoom = 4.0
+        try:
+            settings.set_double_by_name('/module/psdf/zoom', zoom)
+        except Exception:
+            try:
+                settings.set_int32_by_name('/module/psdf/zoom', int(round(zoom)))
+            except Exception:
+                pass
+
+        try:
+            settings.set_int32_by_name('/module/psdf2d/zoom', int(round(zoom)))
+        except Exception:
+            try:
+                settings.set_double_by_name('/module/psdf2d/zoom', zoom)
+            except Exception:
+                pass
+        return self._generate_derived_image(
+            container,
+            settings,
+            output_path,
+            scaled_channel_id,
+            directory_name='psdf',
+            suffix='_psdf.png',
+            description='PSDF generation',
+            file_label='PSDF image',
+            function_names=['psdf', 'psdf2d'],
+            settings_paths=['/module/psdf/create_image'],
+            channel_transform=lambda channel_id: self._rescale_square_channel(
+                container, settings, channel_id, pixel_count),
+        )
+
+    def _generate_derived_image(self, container, settings, output_path, scaled_channel_id,
+                                directory_name, suffix, description, file_label,
+                                function_names, settings_paths=None,
+                                channel_transform=None):
+        gwy = self.gwy
+        try:
+            for key in settings_paths or []:
+                try:
+                    settings.set_boolean_by_name(key, True)
+                    continue
+                except Exception:
+                    pass
+                try:
+                    settings.set_int32_by_name(key, 1)
+                except Exception:
+                    continue
+
+            ran = False
+            for func_name in function_names:
+                if not func_name:
+                    continue
+                if self._run_process_function(container, func_name, description=description):
+                    ran = True
+                    break
+            if not ran:
+                return None
+
+            data_ids = gwy.gwy_app_data_browser_get_data_ids(container)
+            if not data_ids:
+                return None
+            derived_channel = data_ids[-1]
+            if channel_transform is not None:
+                try:
+                    transformed = channel_transform(derived_channel)
+                except Exception:
+                    transformed = None
+                if transformed is not None:
+                    derived_channel = transformed
+            gwy.gwy_app_data_browser_select_data_field(container, derived_channel)
+
+            base, file_name = os.path.split(output_path)
+            name, _ = os.path.splitext(file_name)
+            directory = os.path.join(base, directory_name)
+            if not os.path.isdir(directory):
+                os.makedirs(directory)
+            derived_path = os.path.join(directory, name + suffix)
+            self._save_container(container, derived_path, interactive=False)
+            self.logger.info('%s saved to %s', file_label, derived_path)
+            try:
+                gwy.gwy_app_data_browser_select_data_field(container, scaled_channel_id)
+            except Exception:
+                pass
+            return derived_path
+        except Exception as exc:
+            self.logger.error('Failed to generate %s for %s: %s', file_label, output_path, exc)
+            self.logger.debug('%s error details', description, exc_info=True)
+            return None
+
+    def _rescale_square_channel(self, container, settings, channel_id, pixel_count):
+        if pixel_count is None:
+            return channel_id
+        try:
+            target_pixels = int(pixel_count)
+        except Exception:
+            return channel_id
+        if target_pixels <= 0:
+            return channel_id
+
+        gwy = self.gwy
+        try:
+            gwy.gwy_app_data_browser_select_data_field(container, channel_id)
+        except Exception:
+            return channel_id
+
+        data_field = gwy.gwy_app_data_browser_get_current(gwy.APP_DATA_FIELD)
+        if data_field is None:
+            return channel_id
+        try:
+            xres = data_field.get_xres()
+            yres = data_field.get_yres()
+        except Exception:
+            return channel_id
+        if xres == target_pixels and yres == target_pixels:
+            return channel_id
+        if xres <= 0:
+            return channel_id
+
+        scale_ratio = float(target_pixels) / float(xres)
+        try:
+            settings.set_int32_by_name('/module/scale/interp', 1)
+        except Exception:
+            pass
+        try:
+            settings.set_boolean_by_name('/module/scale/proportional', True)
+        except Exception:
+            pass
+        try:
+            settings.set_double_by_name('/module/scale/ratio', scale_ratio)
+        except Exception:
+            pass
+        try:
+            settings.set_boolean_by_name('/module/scale/proportional', False)
+        except Exception:
+            pass
+        try:
+            settings.set_double_by_name('/module/scale/aspectratio', 1.0)
+        except Exception:
+            pass
+
+        if not self._run_process_function(container, 'scale', description='PSDF rescaling'):
+            return channel_id
+
+        data_ids = gwy.gwy_app_data_browser_get_data_ids(container)
+        if not data_ids:
+            return channel_id
+        return data_ids[-1]
 
     def _render_channel_videos(self, channel_number, output_paths, acf_paths,
                                capture_times, config):

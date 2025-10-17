@@ -37,13 +37,7 @@ VIDEO_UNIFORM_FRAME_DURATION = False
 # Additional ffmpeg arguments can be provided via the API if needed
 # Stabilization settings ----------------------------------------------------
 STABILIZE_VIDEO = False
-STABILIZE_SHAKINESS = 5
-STABILIZE_ACCURACY = 9
-STABILIZE_STEPSIZE = 6
-STABILIZE_MINCONTRAST = 0.3
-STABILIZE_SMOOTHING = 15
-STABILIZE_TRIPOD = True
-STABILIZE_CROP_SHARED = True
+STABILIZE_MAX_DISPLACEMENT_PERCENT = 5.0
 # Image processing toggles --------------------------------------------------
 FLATTENING_ENABLED = True
 ALIGN_ROWS_ENABLED = True
@@ -53,6 +47,8 @@ REMOVE_SCARS = False
 FIX_ZERO = True
 EXPORT_STATS = False
 GENERATE_ACF = False
+GENERATE_PSDF = False
+PSDF_ZOOM = 4  # Valid options: 1, 2, 4, 8, 16
 # ---------------------------------------------------------------------------
 
 
@@ -61,13 +57,7 @@ def main():
 
     stabilization_settings = StabilizationSettings(
         enabled=STABILIZE_VIDEO,
-        shakiness=STABILIZE_SHAKINESS,
-        accuracy=STABILIZE_ACCURACY,
-        stepsize=STABILIZE_STEPSIZE,
-        mincontrast=STABILIZE_MINCONTRAST,
-        smoothing=STABILIZE_SMOOTHING,
-        tripod=STABILIZE_TRIPOD,
-        crop_shared_area=STABILIZE_CROP_SHARED,
+        max_displacement_percent=STABILIZE_MAX_DISPLACEMENT_PERCENT,
     )
 
     video_settings = VideoSettings(
@@ -89,6 +79,8 @@ def main():
         fix_zero=FIX_ZERO,
         export_stats=EXPORT_STATS,
         generate_acf=GENERATE_ACF,
+        generate_psdf=GENERATE_PSDF,
+        psdf_zoom=PSDF_ZOOM,
     )
 
     config = BatchConfig(
