@@ -112,6 +112,7 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
                 'export_stats': bool(self.stats_var.get()),
                 'generate_acf': bool(self.acf_var.get()),
                 'generate_psdf': bool(self.psdf_var.get()),
+                'save_psdf_raw': bool(self.psdf_raw_var.get()),
                 'psdf_zoom': self.psdf_zoom_var.get(),
             },
         }
@@ -169,6 +170,7 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
         self.stats_var = tk.IntVar(value=1 if processing_defaults.get('export_stats') else 0)
         self.acf_var = tk.IntVar(value=1 if processing_defaults.get('generate_acf') else 0)
         self.psdf_var = tk.IntVar(value=1 if processing_defaults.get('generate_psdf') else 0)
+        self.psdf_raw_var = tk.IntVar(value=1 if processing_defaults.get('save_psdf_raw') else 0)
         psdf_zoom_default = processing_defaults.get('psdf_zoom', '4')
         self.psdf_zoom_var = tk.StringVar(value=self._sanitize_psdf_zoom(psdf_zoom_default))
 
@@ -269,6 +271,12 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
         self.psdf_zoom_menu = tk.OptionMenu(psdf_frame, self.psdf_zoom_var, *psdf_zoom_choices)
         self.psdf_zoom_menu.configure(width=4)
         self.psdf_zoom_menu.pack(side='left')
+        psdf_raw_cb = tk.Checkbutton(
+            psdf_frame,
+            text='Save raw PSDF (.gwy)',
+            variable=self.psdf_raw_var,
+        )
+        psdf_raw_cb.pack(side='left', padx=(10, 0))
 
         row += 1
 
@@ -518,6 +526,7 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
             export_stats=bool(self.stats_var.get()),
             generate_acf=bool(self.acf_var.get()),
             generate_psdf=bool(self.psdf_var.get()),
+            save_psdf_raw=bool(self.psdf_raw_var.get()),
             psdf_zoom=psdf_zoom,
         )
 
@@ -644,4 +653,3 @@ class BatchProcessorGUI(object):  # pragma: no cover - UI heavy
 
     def run(self):
         self.root.mainloop()
-

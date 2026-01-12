@@ -108,6 +108,7 @@ class GwyddionBatchProcessor(object):
             output_paths = []
             acf_paths = []
             psdf_paths = []
+            psdf_raw_paths = []
             capture_times = []
             channel_output_directory = config.ensure_channel_directory(channel_number)
             if processing_options and getattr(processing_options, 'generate_acf', False):
@@ -138,6 +139,9 @@ class GwyddionBatchProcessor(object):
                     psdf_path = result.get('psdf_path')
                     if psdf_path:
                         psdf_paths.append(psdf_path)
+                    psdf_raw_path = result.get('psdf_raw_path')
+                    if psdf_raw_path:
+                        psdf_raw_paths.append(psdf_raw_path)
                     capture_times.append(file_times.get(path))
 
             self.logger.info('Channel %d complete: %d/%d files succeeded',
@@ -148,6 +152,7 @@ class GwyddionBatchProcessor(object):
                 'output_paths': output_paths,
                 'acf_paths': acf_paths,
                 'psdf_paths': psdf_paths,
+                'psdf_raw_paths': psdf_raw_paths,
             }
             overall_processed += successes
 
@@ -262,8 +267,9 @@ class GwyddionBatchProcessor(object):
                 acf_directory,
             )
         psdf_path = None
+        psdf_raw_path = None
         if getattr(options, 'generate_psdf', False):
-            psdf_path = self._generate_psdf_image(
+            psdf_result = self._generate_psdf_image(
                 container,
                 settings,
                 output_path,
@@ -271,11 +277,17 @@ class GwyddionBatchProcessor(object):
                 options,
                 pixel_count,
             )
+            if isinstance(psdf_result, dict):
+                psdf_path = psdf_result.get('psdf_path')
+                psdf_raw_path = psdf_result.get('psdf_raw_path')
+            else:
+                psdf_path = psdf_result
         return {
             'image_path': output_path,
             'acf_path': acf_path,
             'stats_path': stats_path,
             'psdf_path': psdf_path,
+            'psdf_raw_path': psdf_raw_path,
         }
 
     def _run_process_function(self, container, func_name, description=None,
@@ -1312,20 +1324,79 @@ class GwyddionBatchProcessor(object):
                 settings.set_double_by_name('/module/psdf2d/zoom', zoom)
             except Exception:
                 pass
-        return self._generate_derived_image(
-            container,
-            settings,
+        gwy = self.gwy
+        try:
+            try:
+                settings.set_boolean_by_name('/module/psdf/create_image', True)
+            except Exception:
+                try:
+                    settings.set_int32_by_name('/module/psdf/create_image', 1)
+                except Exception:
+                    pass
+
+            ran = False
+            for func_name in ('psdf', 'psdf2d'):
+                if self._run_process_function(container, func_name, description='PSDF generation'):
+                    ran = True
+                    break
+            if not ran:
+                return None
+
+            data_ids = gwy.gwy_app_data_browser_get_data_ids(container)
+            if not data_ids:
+                return None
+            derived_channel = data_ids[-1]
+
+            raw_path = None
+            if getattr(options, 'save_psdf_raw', False):
+                raw_path = self._save_psdf_raw_data(container, output_path, derived_channel)
+
+            derived_channel = self._rescale_square_channel(
+                container, settings, derived_channel, pixel_count)
+            gwy.gwy_app_data_browser_select_data_field(container, derived_channel)
+
+            derived_path = self._build_derived_output_path(
+                output_path,
+                directory_name='psdf',
+                suffix='_psdf.png',
+            )
+            self._save_container(container, derived_path, interactive=False)
+            self.logger.info('PSDF image saved to %s', derived_path)
+            try:
+                gwy.gwy_app_data_browser_select_data_field(container, scaled_channel_id)
+            except Exception:
+                pass
+            return {
+                'psdf_path': derived_path,
+                'psdf_raw_path': raw_path,
+            }
+        except Exception as exc:
+            self.logger.error('Failed to generate PSDF image for %s: %s', output_path, exc)
+            self.logger.debug('PSDF generation error details', exc_info=True)
+            return None
+
+    def _save_psdf_raw_data(self, container, output_path, channel_id):
+        gwy = self.gwy
+        try:
+            gwy.gwy_app_data_browser_select_data_field(container, channel_id)
+        except Exception:
+            pass
+        raw_path = self._build_derived_output_path(
             output_path,
-            scaled_channel_id,
             directory_name='psdf',
-            suffix='_psdf.png',
-            description='PSDF generation',
-            file_label='PSDF image',
-            function_names=['psdf', 'psdf2d'],
-            settings_paths=['/module/psdf/create_image'],
-            channel_transform=lambda channel_id: self._rescale_square_channel(
-                container, settings, channel_id, pixel_count),
+            suffix='_psdf_raw.gwy',
         )
+        self._save_container(container, raw_path, interactive=False)
+        self.logger.info('PSDF raw data saved to %s', raw_path)
+        return raw_path
+
+    def _build_derived_output_path(self, output_path, directory_name, suffix):
+        base, file_name = os.path.split(output_path)
+        name, _ = os.path.splitext(file_name)
+        directory = os.path.join(base, directory_name)
+        if not os.path.isdir(directory):
+            os.makedirs(directory)
+        return os.path.join(directory, name + suffix)
 
     def _generate_derived_image(self, container, settings, output_path, scaled_channel_id,
                                 directory_name, suffix, description, file_label,
@@ -1367,12 +1438,11 @@ class GwyddionBatchProcessor(object):
                     derived_channel = transformed
             gwy.gwy_app_data_browser_select_data_field(container, derived_channel)
 
-            base, file_name = os.path.split(output_path)
-            name, _ = os.path.splitext(file_name)
-            directory = os.path.join(base, directory_name)
-            if not os.path.isdir(directory):
-                os.makedirs(directory)
-            derived_path = os.path.join(directory, name + suffix)
+            derived_path = self._build_derived_output_path(
+                output_path,
+                directory_name=directory_name,
+                suffix=suffix,
+            )
             self._save_container(container, derived_path, interactive=False)
             self.logger.info('%s saved to %s', file_label, derived_path)
             try:

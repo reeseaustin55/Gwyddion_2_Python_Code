@@ -94,6 +94,10 @@ def build_arg_parser():
                         help='Generate and export a 2D PSDF image for each processed channel.')
     parser.add_argument('--no-psdf', dest='generate_psdf', action='store_false',
                         help='Disable PSDF export (default).')
+    parser.add_argument('--psdf-raw', dest='save_psdf_raw', action='store_true', default=False,
+                        help='Save the raw PSDF data as a .gwy file alongside PSDF images.')
+    parser.add_argument('--no-psdf-raw', dest='save_psdf_raw', action='store_false',
+                        help='Disable raw PSDF export (default).')
     parser.add_argument('--psdf-zoom', dest='psdf_zoom', type=int, default=4,
                         choices=ALLOWED_PSDF_ZOOMS,
                         help='Zoom factor used when generating PSDF images (choices: %s, default: 4).' %
@@ -106,6 +110,7 @@ def build_arg_parser():
         export_stats=False,
         generate_acf=False,
         generate_psdf=False,
+        save_psdf_raw=False,
         psdf_zoom=4,
     )
     return parser
@@ -155,6 +160,7 @@ def main(argv=None):
             export_stats=args.export_stats,
             generate_acf=args.generate_acf,
             generate_psdf=args.generate_psdf,
+            save_psdf_raw=args.save_psdf_raw,
             psdf_zoom=args.psdf_zoom,
         )
         config = BatchConfig(

@@ -109,6 +109,9 @@ An additional toggle exports PSDF imagery to a sibling ``psdf`` folder with a
 configurable zoom factor (choices ``1×``, ``2×``, ``4×``, ``8×`` or ``16×``)
 so the generated view matches the interactive Gwyddion workflow while keeping
 the exported image at the same pixel dimensions as the main channel output.
+Enable the raw PSDF export option to save the underlying PSDF data as a
+``*_psdf_raw.gwy`` file for manual inspection or additional processing inside
+Gwyddion.
 
 When video rendering is enabled the tool invokes `ffmpeg` using a concat file
 similar to the batch scripts provided previously.  The time span between the
