@@ -48,6 +48,7 @@ FIX_ZERO = True
 EXPORT_STATS = False
 GENERATE_ACF = False
 GENERATE_PSDF = False
+SAVE_PSDF_RAW = False
 PSDF_ZOOM = 4  # Valid options: 1, 2, 4, 8, 16
 # ---------------------------------------------------------------------------
 
@@ -80,6 +81,7 @@ def main():
         export_stats=EXPORT_STATS,
         generate_acf=GENERATE_ACF,
         generate_psdf=GENERATE_PSDF,
+        save_psdf_raw=SAVE_PSDF_RAW,
         psdf_zoom=PSDF_ZOOM,
     )
 
